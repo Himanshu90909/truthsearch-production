@@ -3,7 +3,7 @@ import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router } from "./_core/trpc";
-import { addMessage, addQuery, addSource, createSession, getSession, updateSession } from "./db";
+import { addClaim, addCitation, addEvidence, addMessage, addPassage, addQuery, addSource, createSession, getSession, matchPassageId, updateSession } from "./db";
 import { conductResearch, makeQueries } from "./research";
 
 const questionInput = z.object({ question: z.string().trim().min(8).max(1200) });
@@ -14,7 +14,9 @@ async function runResearch(id: number, question: string) {
     await addMessage(id, "system", "Research started. Progress reflects completed backend actions only.");
     const result = await conductResearch(question, (progress) => { void addMessage(id, "system", `${progress.stage}: ${progress.detail}`); });
     for (const q of result.plan.queries) await addQuery(id, q, result.plan.providers.join(" + "), "searched", result.sources.length);
-    for (const source of result.sources) await addSource(id, source);
+    const sourceIds: number[] = []; const passageIds: number[][] = [];
+    for (const source of result.sources) { const sourceId = await addSource(id, source); sourceIds.push(sourceId); const ids: number[] = []; for (let i = 0; i < source.passages.length; i++) ids.push(await addPassage(sourceId, i, source.passages[i])); passageIds.push(ids); }
+    for (const evidence of result.evidence) { const claimId = await addClaim(id, evidence.claim, evidence.supportScore, "verified"); const source = result.sources[evidence.sourceId]; const passageId = source ? matchPassageId(source.passages, evidence.quote, passageIds[evidence.sourceId] || []) : 0; const sourceId = sourceIds[evidence.sourceId] || 0; if (passageId && sourceId) { await addEvidence(claimId, passageId, evidence.quote, evidence.supportScore); await addCitation(claimId, sourceId, true); } }
     await addMessage(id, "assistant", result.answer);
     await updateSession(id, { status: "completed", answer: result.answer, plan: result.plan });
   } catch (error) {

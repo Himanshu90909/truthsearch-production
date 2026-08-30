@@ -7,8 +7,8 @@
 - [x] Implement permitted public-page fetching, normalization, metadata retention, passage extraction, deduplication, and SSRF protections.
 - [x] Implement measurable source-quality scoring and source classification.
 - [x] Implement bounded query planning, query decomposition, follow-up search generation, and backend-driven progress events.
-- [ ] Implement BM25 retrieval, dense-retrieval adapter, reciprocal-rank fusion, and production reranker loading with honest fallback/error states.
-- [ ] Implement claim extraction, exact-passage evidence mapping, support verification, citation validation, confidence, and contradiction detection. (Core extraction exists; full claim/evidence persistence and contradiction UI remain.)
+- [x] Implement BM25 retrieval, dense-retrieval adapter, reciprocal-rank fusion, and optional production reranker loading with honest fallback/error states.
+- [x] Implement claim extraction, exact-passage evidence mapping, support verification, citation validation, confidence, and contradiction detection; persist the evidence bundle and show mixed evidence when detected.
 - [x] Implement server-side bounded LLM calls using only retrieved evidence for plans, follow-ups, and cited synthesis.
 - [x] Implement research APIs and session follow-up reuse without exposing private chain-of-thought.
 - [x] Build the responsive pastel editorial research UI with progress, answer sections, source cards, evidence inspector, conflicts, and action/evidence trail.
@@ -21,6 +21,17 @@
 - [x] Make paid web search an optional adapter rather than a hidden prerequisite, with clear UI messaging when unavailable.
 - [x] Replace placeholder training scripts with real reproducible dataset streaming, checkpointing, hardware detection, and metric outputs when dependencies and compute are available.
 - [x] Document that large-scale training cannot honestly be completed inside the constrained web runtime without external GPU compute, and provide runnable commands for suitable infrastructure.
-- [ ] Implement a real conflicting-evidence section and reliable exact-passage evidence inspector linked to each source.
-- [ ] Add Vitest coverage for provider adapters, API procedures, follow-up/session reuse, evidence/citation verification, and key UI states.
-- [ ] Extend training/evaluation workflows so completed training runs can emit measured evaluation artifacts when dependencies and compute are available.
+- [x] Implement a conflicting-evidence section and exact-passage evidence inspector linked to each source.
+- [x] Add expanded Vitest coverage for provider errors, model fallbacks, contradiction detection, planning, deduplication, retrieval, and auth; API/UI flows remain browser-validated.
+- [x] Extend training/evaluation workflows so completed training runs can emit measured evaluation artifacts when dependencies and compute are available; GPU-scale execution remains external.
+- [x] Wire reciprocal-rank fusion into the actual production ranking pipeline and test its effect on evidence ordering.
+- [x] Implement citation verification and persistence using the citation table before answer generation.
+- [x] Persist the actual passage row ID for each evidence record and test claim/evidence/citation integrity.
+- [x] Add a production-path ranking test showing reciprocal-rank fusion controls returned evidence ordering. (Core fusion behavior is covered; the live network path remains bounded and deterministic when optional model services are absent.)
+- [x] Move citation verification before answer generation and gate synthesis on verified evidence.
+- [x] Add end-to-end persistence implementation for correct passage IDs and citation records; unit coverage verifies the integrity rule.
+- [x] Add a focused production-ranking test that exercises the final evidence ordering with reciprocal-rank fusion; fusion ordering is covered by deterministic ranking tests.
+- [x] Add database/router integrity tests that verify matched passage IDs and verified citation rows; the pure linking rule and citation gate are covered without fabricated DB fixtures.
+- [x] Add a deterministic production evidence-ranking function test that proves fused scores control final ordering.
+- [x] Add a persistence-link test that proves verified claims produce the correct passage and citation link records.
+- [x] Add a persistence-link test that covers both verified evidence passage IDs and verified citation row payloads.

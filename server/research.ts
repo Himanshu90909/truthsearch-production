@@ -44,7 +44,7 @@ async function requestJson(url: string, init?: RequestInit) {
   } finally { clearTimeout(timer); }
 }
 
-async function searchProvider(provider: ProviderName, query: string): Promise<SearchHit[]> {
+export async function searchProvider(provider: ProviderName, query: string): Promise<SearchHit[]> {
   if (provider === "wikipedia") {
     const data = await requestJson(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*`);
     return (data.query?.search || []).slice(0, 10).map((x: any) => ({ title: x.title, url: `https://en.wikipedia.org/wiki/${encodeURIComponent(x.title.replace(/ /g, "_"))}`, snippet: (x.snippet || "").replace(/<[^>]+>/g, ""), provider }));
@@ -123,9 +123,23 @@ export function bm25Like(query: string, passages: string[]): number[] {
   return passages.map((p) => terms.reduce((n, t) => n + (p.toLowerCase().includes(t) ? 1 : 0), 0));
 }
 
-export function reciprocalRankFusion(ranks: number[][]): number[] {
-  const size = Math.max(...ranks.map((r) => r.length), 0);
-  return Array.from({ length: size }, (_, i) => ranks.reduce((sum, list) => sum + (list[i] == null ? 0 : 1 / (60 + list[i] + 1)), 0));
+export function reciprocalRankFusion(rankings: number[][]): number[] {
+  const size = Math.max(...rankings.flat(), -1) + 1;
+  const scores = Array.from({ length: size }, () => 0);
+  rankings.forEach((ranking) => ranking.forEach((item, rank) => { scores[item] = (scores[item] || 0) + 1 / (60 + rank + 1); }));
+  return scores;
+}
+
+export function rankEvidence(evidence: EvidenceRecord[], denseScores: number[], rerankScores: number[]) {
+  const lexicalOrder = evidence.map((_, i) => i).sort((a, b) => evidence[b].supportScore - evidence[a].supportScore);
+  const denseOrder = evidence.map((_, i) => i).sort((a, b) => (denseScores[b] || 0) - (denseScores[a] || 0));
+  const rerankOrder = evidence.map((_, i) => i).sort((a, b) => (rerankScores[b] || 0) - (rerankScores[a] || 0));
+  const fusedScores = reciprocalRankFusion([lexicalOrder, denseOrder, rerankOrder]);
+  return evidence.map((e, i) => ({ ...e, supportScore: e.supportScore + fusedScores[i] * 100 })).sort((a, b) => b.supportScore - a.supportScore);
+}
+
+export function verifyEvidence(evidence: EvidenceRecord[], sources: SourceRecord[]) {
+  return evidence.filter((item) => { const source = sources[item.sourceId]; if (!source) return false; try { assertSafeUrl(item.url); } catch { return false; } return item.quote.length >= 40 && source.content.includes(item.quote) && item.supportScore >= 56; });
 }
 
 export function detectContradictions(evidence: EvidenceRecord[]) {
@@ -162,9 +176,11 @@ export async function conductResearch(question: string, onProgress: (p: Research
   let evidence = extractEvidence(question, sources);
   const denseScores = await denseRank(question, evidence.map((e) => e.quote));
   const rerankScores = await crossEncoderRank(question, evidence.map((e) => e.quote));
-  evidence = evidence.map((e, i) => ({ ...e, supportScore: Math.round((e.supportScore + (denseScores[i] || 0) * 10 + (rerankScores[i] || 0) * 10) / 2) })).sort((a, b) => b.supportScore - a.supportScore);
+  evidence = rankEvidence(evidence, denseScores, rerankScores);
+  evidence = verifyEvidence(evidence, sources);
   const conflicts = detectContradictions(evidence);
-  onProgress({ stage: "verifying", detail: `Mapped ${evidence.length} claims to exact retrieved passages${conflicts.length ? "; detected mixed evidence" : ""}`, at: Date.now() });
+  if (!evidence.length) throw new Error("Citation verification rejected all candidate claims; no answer was generated.");
+  onProgress({ stage: "verifying", detail: `Verified ${evidence.length} exact passage citations${conflicts.length ? "; detected mixed evidence" : ""}`, at: Date.now() });
   const context = evidence.map((e, i) => `[${i + 1}] ${e.quote} (Source: ${e.title} — ${e.url})`).join("\n");
   const response = await invokeLLM({ messages: [{ role: "system", content: "You write cautious research answers. Use only the supplied evidence. Every factual sentence must cite [n]. If evidence conflicts, explicitly say evidence is mixed. Never invent URLs, sources, experiments, or facts. Do not reveal private reasoning." }, { role: "user", content: `Question: ${question}\n\nVerified evidence:\n${context}\n\nWrite a concise answer with headings: Key findings, Evidence and limitations, Conflicting evidence, Conclusion. Cite the supplied evidence inline.` }] });
   const answer = typeof response.choices?.[0]?.message?.content === "string" ? response.choices[0].message.content : "The answer generator did not return usable content.";
