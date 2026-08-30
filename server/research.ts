@@ -1,7 +1,7 @@
 import { invokeLLM } from "./_core/llm";
 import { crossEncoderRank, denseRank } from "./ml";
 
-export type ProviderName = "brave" | "tavily" | "semanticScholar" | "crossref" | "wikipedia" | "arxiv";
+export type ProviderName = "brave" | "tavily" | "semanticScholar" | "crossref" | "openalex" | "europePmc" | "wikipedia" | "arxiv";
 export type ResearchProgress = { stage: string; detail: string; at: number };
 export type SearchHit = { title: string; url: string; snippet: string; published?: string; author?: string; provider: ProviderName };
 export type SourceRecord = SearchHit & { canonicalUrl: string; domain: string; sourceType: string; qualityScore: number; content: string; passages: string[] };
@@ -49,6 +49,14 @@ export async function searchProvider(provider: ProviderName, query: string): Pro
     const data = await requestJson(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*`);
     return (data.query?.search || []).slice(0, 10).map((x: any) => ({ title: x.title, url: `https://en.wikipedia.org/wiki/${encodeURIComponent(x.title.replace(/ /g, "_"))}`, snippet: (x.snippet || "").replace(/<[^>]+>/g, ""), provider }));
   }
+  if (provider === "openalex") {
+    const data = await requestJson(`https://api.openalex.org/works?search=${encodeURIComponent(query)}&per-page=10&select=title,doi,publication_year,authorships,abstract_inverted_index`);
+    return (data.results || []).map((x: any) => ({ title: x.title || "OpenAlex work", url: x.doi || x.id, snippet: x.abstract_inverted_index ? Object.keys(x.abstract_inverted_index).slice(0, 80).join(" ") : "", published: x.publication_year ? String(x.publication_year) : undefined, author: x.authorships?.map((a: any) => a.author?.display_name).filter(Boolean).join(", "), provider }));
+  }
+  if (provider === "europePmc") {
+    const data = await requestJson(`https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=${encodeURIComponent(query)}&format=json&pageSize=10&resultType=core`);
+    return (data.resultList?.result || []).map((x: any) => ({ title: x.title || "Europe PMC article", url: x.fullTextUrlList?.fullTextUrl?.[0]?.url || `https://europepmc.org/article/${x.source}/${x.id}`, snippet: x.abstractText || "", published: x.firstPublicationDate, author: x.authorString, provider }));
+  }
   if (provider === "arxiv") {
     const xml = await requestText(`https://export.arxiv.org/api/query?search_query=all:${encodeURIComponent(query)}&start=0&max_results=10`);
     const entries = xml.split("<entry>").slice(1, 11);
@@ -76,7 +84,7 @@ export async function searchProvider(provider: ProviderName, query: string): Pro
 }
 
 export function classifySource(domain: string, provider: ProviderName): string {
-  if (provider === "semanticScholar" || provider === "crossref" || provider === "arxiv") return "Academic Paper";
+  if (["semanticScholar", "crossref", "openalex", "europePmc", "arxiv"].includes(provider)) return "Academic Paper";
   if (/\.gov$|\.gov\./.test(domain)) return "Government";
   if (/docs\.|developer\./.test(domain)) return "Official Documentation";
   if (/arxiv\.org|deepmind|openai|anthropic|microsoft\.com/.test(domain)) return "Research Organization";
@@ -164,7 +172,8 @@ export async function conductResearch(question: string, onProgress: (p: Research
   onProgress({ stage: "planning", detail: "Bounded research plan created", at: Date.now() });
   const queries = makeQueries(question, true);
   onProgress({ stage: "searching", detail: `Running ${queries.length} live searches across ${primary} and ${academic}`, at: Date.now() });
-  const planned = [...queries.slice(0, 3).map((q) => ({ q, provider: primary })), ...queries.slice(3).map((q) => ({ q, provider: academic }))];
+  const freeAcademic = [academic, "openalex", "europePmc", "crossref"] as ProviderName[];
+  const planned = queries.map((q, i) => ({ q, provider: i < 2 ? primary : freeAcademic[(i - 2) % freeAcademic.length] }));
   const settled = await Promise.allSettled(planned.map(({ q, provider }) => searchProvider(provider, q)));
   const failures = settled.filter((x): x is PromiseRejectedResult => x.status === "rejected").map((x) => x.reason instanceof Error ? x.reason.message : "Provider failed");
   if (failures.length) onProgress({ stage: "provider-warning", detail: `${failures.length} provider request(s) unavailable; continuing only with completed live results`, at: Date.now() });
@@ -187,5 +196,5 @@ export async function conductResearch(question: string, onProgress: (p: Research
   const response = await invokeLLM({ messages: [{ role: "system", content: "You write cautious research answers. Use only the supplied evidence. Every factual sentence must cite [n]. If evidence conflicts, explicitly say evidence is mixed. Never invent URLs, sources, experiments, or facts. Do not reveal private reasoning." }, { role: "user", content: `Question: ${question}\n\nVerified evidence:\n${context}\n\nWrite a concise answer with headings: Key findings, Evidence and limitations, Conflicting evidence, Conclusion. Cite the supplied evidence inline.` }] });
   const answer = typeof response.choices?.[0]?.message?.content === "string" ? response.choices[0].message.content : "The answer generator did not return usable content.";
   onProgress({ stage: "completed", detail: "Citations verified against retrieved URLs", at: Date.now() });
-  return { answer, plan: { question, queries, providers: [primary, academic], bounded: true, evidence, conflicts }, sources, evidence, conflicts, progress: [] as ResearchProgress[] };
+  return { answer, plan: { question, queries, providers: Array.from(new Set(planned.map((x) => x.provider))), bounded: true, evidence, conflicts }, sources, evidence, conflicts, progress: [] as ResearchProgress[] };
 }
