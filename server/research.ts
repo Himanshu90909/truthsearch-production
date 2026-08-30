@@ -157,8 +157,10 @@ function extractEvidence(question: string, sources: SourceRecord[]): EvidenceRec
 
 export async function conductResearch(question: string, onProgress: (p: ResearchProgress) => void) {
   if (question.trim().length < 8 || question.length > 1200) throw new Error("Question must be between 8 and 1,200 characters.");
-  const primary = (env("SEARCH_PROVIDER") || "brave") as ProviderName;
-  const academic = (env("ACADEMIC_SEARCH_PROVIDER") || "semanticScholar") as ProviderName;
+  const requested = env("SEARCH_PROVIDER");
+  const paidEnabled = env("ENABLE_PAID_SEARCH") === "true";
+  const primary = (paidEnabled && (requested === "brave" || requested === "tavily") ? requested : "wikipedia") as ProviderName;
+  const academic = (env("ACADEMIC_SEARCH_PROVIDER") || "arxiv") as ProviderName;
   onProgress({ stage: "planning", detail: "Bounded research plan created", at: Date.now() });
   const queries = makeQueries(question, true);
   onProgress({ stage: "searching", detail: `Running ${queries.length} live searches across ${primary} and ${academic}`, at: Date.now() });

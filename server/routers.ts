@@ -33,7 +33,7 @@ export const appRouter = router({
     logout: publicProcedure.mutation(({ ctx }) => { const cookieOptions = getSessionCookieOptions(ctx.req); ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 }); return { success: true } as const; }),
   }),
   research: router({
-    providers: publicProcedure.query(() => ({ web: process.env.SEARCH_PROVIDER || "wikipedia", academic: process.env.ACADEMIC_SEARCH_PROVIDER || "semanticScholar", configured: true })),
+    providers: publicProcedure.query(() => ({ web: process.env.ENABLE_PAID_SEARCH === "true" && (process.env.SEARCH_PROVIDER === "brave" || process.env.SEARCH_PROVIDER === "tavily") ? process.env.SEARCH_PROVIDER : "wikipedia", academic: process.env.ACADEMIC_SEARCH_PROVIDER || "arxiv", paidSearchEnabled: process.env.ENABLE_PAID_SEARCH === "true", configured: true })),
     plan: publicProcedure.input(questionInput).query(({ input }) => ({ queries: makeQueries(input.question, true), bounded: true, maxRounds: Number(process.env.MAX_RESEARCH_ROUNDS || 3) })),
     start: publicProcedure.input(questionInput).mutation(async ({ input, ctx }) => { const id = await createSession(input.question, ctx.user?.id); void runResearch(id, input.question); return { id }; }),
     get: publicProcedure.input(z.object({ id: z.number().int().positive() })).query(({ input, ctx }) => getSession(input.id, ctx.user?.id)),

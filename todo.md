@@ -35,3 +35,6 @@
 - [x] Add a deterministic production evidence-ranking function test that proves fused scores control final ordering.
 - [x] Add a persistence-link test that proves verified claims produce the correct passage and citation link records.
 - [x] Add a persistence-link test that covers both verified evidence passage IDs and verified citation row payloads.
+- [x] Remove any accidental Brave default from the no-card research path.
+- [x] Add free-provider fallback ordering and per-provider rate-limit handling so one 429 does not stop usable research.
+- [x] Run and verify a real no-card query using the corrected defaults.
