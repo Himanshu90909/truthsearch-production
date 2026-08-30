@@ -79,3 +79,9 @@
 - [x] Run a current-registry health check and education acceptance query through the active server; health returned 200 and backpropagation completed.
 - [x] Run a current-registry programming acceptance query through the active server and record provider/routing outcomes; PostgreSQL indexing completed and persisted with its routed provider plan and provider-warning trail inspected.
 - [x] Fetch the completed PostgreSQL acceptance session and verify its routed providers and research-trail messages.
+- [x] Hide providers whose status is not enabled from the frontend availability panel.
+- [x] Keep backend provider-status records unchanged for diagnostics and truthful routing.
+- [x] Validate the filtered UI and save a reviewable checkpoint.
+- [x] Validate the provider-visibility change in the browser so the landing page shows only enabled providers.
+- [x] Save a new reviewable checkpoint after the filtered-provider UI change is verified.
+- [ ] Save a latest checkpoint containing the verified provider-visibility UI change.
