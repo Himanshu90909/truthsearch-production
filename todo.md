@@ -84,4 +84,4 @@
 - [x] Validate the filtered UI and save a reviewable checkpoint.
 - [x] Validate the provider-visibility change in the browser so the landing page shows only enabled providers.
 - [x] Save a new reviewable checkpoint after the filtered-provider UI change is verified.
-- [ ] Save a latest checkpoint containing the verified provider-visibility UI change.
+- [x] Save a latest checkpoint containing the verified provider-visibility UI change.
