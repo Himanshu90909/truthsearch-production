@@ -51,3 +51,8 @@
 - [x] Verify and document the environment-variable split between the Vercel frontend and the full-stack Node backend.
 - [x] Audit actual environment-variable usage across client and server files and align the deployment document with code evidence.
 - [x] Run a frontend-only Vercel architecture validation pass against the declared build/output settings.
+- [x] Verify the private GitHub repository URL and provide a direct Vercel import URL for it.
+- [x] Clarify that a final Vercel deployment URL cannot exist until the user authorizes and completes deployment in Vercel.
+- [x] Verify why the Vercel shortcut returns page not found and confirm the repository URL still resolves; the shortcut was not reliable, while the manual Vercel entry point and repository resolve.
+- [x] Provide a reliable manual Vercel import path and explain the private-repository login requirement.
+- [x] Opened the previously shared Vercel shortcut directly; it resolves to Vercel’s New Project page and requires Vercel sign-in before cloning/deploying.
