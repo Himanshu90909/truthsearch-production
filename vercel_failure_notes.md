@@ -17,3 +17,19 @@ After the GitHub push, the provided Vercel page loaded the research plan and ent
 ## Latest verification
 
 The Vercel browser page now rendered a completed research session with verified citations. The browser’s direct fetch to the managed backend still returned `TypeError: Failed to fetch`, so the new CORS code is not yet live on the managed deployment. The performance entries shown in the browser still referenced Vercel `/api/trpc/research.get` calls, suggesting the browser may have reused an older cached bundle or an authenticated Vercel path. The final validation must be repeated after publishing the current backend changes and forcing a fresh Vercel deployment/bundle.
+
+## Published-backend check
+
+After the recovery checkpoint, the refreshed Vercel bundle’s performance entries target `https://truthsearch-aynnqgr5.manus.space/api/trpc/...`, but a direct browser fetch still reports `TypeError: Failed to fetch`. A cache-bypassed curl with the exact Vercel `Origin` returns JSON but no `Access-Control-Allow-Origin`; an `OPTIONS` request returns HTTP 415 from tRPC instead of the new 204 CORS response. This indicates the managed backend domain is still serving the older runtime or the checkpoint did not roll the server process, so the CORS fix needs a managed-server refresh/re-publish before final completion.
+
+## CORS fix published
+
+After restarting the managed project service, the live backend returned `Access-Control-Allow-Origin: https://truthsearch-production-himanshu90909s-projects.vercel.app`, credentialed CORS headers, and HTTP 200 JSON for the provider endpoint. The exact preflight returned HTTP 204 with the expected allowed methods and headers. The Vercel client can now read the managed backend directly; a final fresh research-query check remains.
+
+## Fresh query verification
+
+After the managed service restart and CORS verification, the Vercel page loaded cleanly and the fresh query `How can small businesses use AI responsibly in customer support?` entered the research pipeline, showing the previewed search plan and a loading state instead of the previous JSON parse error. One final wait-and-inspect pass is needed to confirm completion and citations.
+
+## Final browser verification
+
+A fresh query on the exact Vercel URL completed as research session 270001. The UI showed planning, searching, fetching, ranking, verifying, and completed states; it displayed `completed: Citations verified against retrieved URLs` and rendered inspectable Wikipedia sources with real `Open URL` links. The original deployment failure is resolved after the client fallback, backend CORS publication, and service restart.

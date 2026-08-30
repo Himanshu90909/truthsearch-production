@@ -95,4 +95,5 @@
 - [x] Diagnose the reported Vercel URL failure at truthsearch-production-himanshu90909s-projects.vercel.app.
 - [x] Verify the Vercel frontend configuration, build output, routing fallback, and backend-origin assumptions.
 - [x] Apply an actionable deployment fix or document the exact user-side Vercel authorization/configuration step when the issue is external.
-- [ ] Re-validate the deployment path and deliver the corrected URL or handoff instructions.
+- [x] Re-validate the deployment path and deliver the corrected URL or handoff instructions.
+- [x] Send the user the verified Vercel deployment update, including the working URL, the managed-backend fallback and CORS fix, and the remaining Vercel protection caveat.
