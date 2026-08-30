@@ -97,3 +97,8 @@
 - [x] Apply an actionable deployment fix or document the exact user-side Vercel authorization/configuration step when the issue is external.
 - [x] Re-validate the deployment path and deliver the corrected URL or handoff instructions.
 - [x] Send the user the verified Vercel deployment update, including the working URL, the managed-backend fallback and CORS fix, and the remaining Vercel protection caveat.
+- [ ] Replace visible “Manus Agent” branding with “HB Innovators by Himanshu Suthar” across the project where applicable.
+- [ ] Verify the updated branding in the rendered website and publish a new checkpoint.
+- [ ] Audit the GitHub repository for visible Manus branding and committed secrets before making it public.
+- [ ] Replace the repository-visible Manus branding with “HB Innovators by Himanshu Suthar” and push the change.
+- [ ] Make the GitHub repository public after the safety audit and verify its public status.
