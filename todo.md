@@ -92,7 +92,7 @@
 - [x] Add a Netlify deployment handoff document with import path, build command, publish directory, and the separate-backend requirement.
 - [x] Provide the Netlify import/deployment handoff after verifying the private GitHub repository is up to date.
 - [x] Deliver the verified Netlify import path, build command, publish directory, and separate-backend note to the user.
-- [ ] Diagnose the reported Vercel URL failure at truthsearch-production-himanshu90909s-projects.vercel.app.
-- [ ] Verify the Vercel frontend configuration, build output, routing fallback, and backend-origin assumptions.
-- [ ] Apply an actionable deployment fix or document the exact user-side Vercel authorization/configuration step when the issue is external.
+- [x] Diagnose the reported Vercel URL failure at truthsearch-production-himanshu90909s-projects.vercel.app.
+- [x] Verify the Vercel frontend configuration, build output, routing fallback, and backend-origin assumptions.
+- [x] Apply an actionable deployment fix or document the exact user-side Vercel authorization/configuration step when the issue is external.
 - [ ] Re-validate the deployment path and deliver the corrected URL or handoff instructions.
