@@ -107,3 +107,6 @@
 - [x] Place “HB Innovators by Himanshu Suthar” attribution at the top of README.md and verify the public repository.
 - [x] Remove the remaining literal public the former agent label wording from tracked repository files, including checklist history where necessary.
 - [x] Commit and push the final README top attribution and re-fetch the public GitHub README to verify it.
+- [ ] Inspect the public GitHub contributors list and local commit authors for Himanshu Suthar and any other author identities.
+- [ ] If needed, consolidate repository commit authorship to the user’s GitHub identity without changing tracked project contents.
+- [ ] Verify the public contributor list after the update and report the result.
