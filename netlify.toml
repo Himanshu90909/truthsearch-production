@@ -1,0 +1,16 @@
+[build]
+  command = "pnpm build"
+  publish = "dist/public"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+[build.environment]
+  NODE_VERSION = "22"
+
+# TruthSearch's live Express+tRPC/database backend is not a static Netlify
+# function in this repository. Keep the full backend on the managed full-stack
+# deployment or another compatible Node host, and set the frontend API origin
+# there when a split deployment is used.
