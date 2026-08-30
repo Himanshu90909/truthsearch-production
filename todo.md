@@ -42,7 +42,8 @@
 - [ ] Push the validated TruthSearch project to the target GitHub repository.
 - [ ] Add Vercel deployment configuration and document required environment variables and runtime caveats.
 - [ ] Validate the pushed repository and provide the Vercel import/deployment steps.
-- [ ] Add Vercel deployment configuration and exact environment-variable handoff instructions.
-- [ ] Create a new private GitHub repository under the authenticated account.
-- [ ] Push the complete validated TruthSearch code to the new repository.
-- [ ] Validate the new repository and provide the Vercel import/deploy handoff.
+- [x] Add Vercel deployment configuration and exact environment-variable handoff instructions.
+- [x] Create a new private GitHub repository under the authenticated account.
+- [x] Push the complete validated TruthSearch code to the new repository.
+- [x] Validate the new repository and provide the Vercel import/deploy handoff.
+- [ ] Add a concrete Vercel deployment configuration aligned with the Express+tRPC server entry and re-verify the documented environment variables.
