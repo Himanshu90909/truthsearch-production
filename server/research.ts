@@ -1,7 +1,8 @@
 import { invokeLLM } from "./_core/llm";
 import { crossEncoderRank, denseRank } from "./ml";
+import { providerRegistry, providersForIntent } from "./providers/registry";
 
-export type ProviderName = "brave" | "tavily" | "semanticScholar" | "crossref" | "openalex" | "europePmc" | "wikipedia" | "arxiv";
+export type ProviderName = "brave" | "tavily" | "semanticScholar" | "crossref" | "openalex" | "europePmc" | "wikipedia" | "arxiv" | "github" | "stackExchange" | "openLibrary" | "wikidata" | "worldBank" | "dataGov";
 export type ResearchProgress = { stage: string; detail: string; at: number };
 export type SearchHit = { title: string; url: string; snippet: string; published?: string; author?: string; provider: ProviderName };
 export type SourceRecord = SearchHit & { canonicalUrl: string; domain: string; sourceType: string; qualityScore: number; content: string; passages: string[] };
@@ -45,6 +46,11 @@ async function requestJson(url: string, init?: RequestInit) {
 }
 
 export async function searchProvider(provider: ProviderName, query: string): Promise<SearchHit[]> {
+  const knowledgeProvider = providerRegistry.get(provider);
+  if (knowledgeProvider) {
+    const results = await knowledgeProvider.search(query, 10);
+    return results.map((result) => ({ title: result.title, url: result.url, snippet: result.snippet, published: result.published, author: result.author, provider }));
+  }
   if (provider === "wikipedia") {
     const data = await requestJson(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*`);
     return (data.query?.search || []).slice(0, 10).map((x: any) => ({ title: x.title, url: `https://en.wikipedia.org/wiki/${encodeURIComponent(x.title.replace(/ /g, "_"))}`, snippet: (x.snippet || "").replace(/<[^>]+>/g, ""), provider }));
@@ -119,6 +125,18 @@ async function fetchReadable(hit: SearchHit): Promise<SourceRecord | null> {
   } catch { return null; }
 }
 
+export function classifyIntent(question: string): string {
+  const q = question.toLowerCase();
+  if (/\b(dataset|data source|open data|indicator|statistics)\b/.test(q)) return "dataset";
+  if (/\b(book|textbook|reading list|isbn)\b/.test(q)) return "books";
+  if (/\b(course|tutorial|learn|beginner|lesson|education)\b/.test(q)) return "education";
+  if (/\bpython|javascript|typescript|rust|java|postgres|docker|kubernetes|programming|code|api\b/.test(q)) return "programming";
+  if (/\bdocs?|documentation|reference|how does .* work\b/.test(q)) return "documentation";
+  if (/\bgovernment|gdp|population|health|economy|country\b/.test(q)) return "government";
+  if (/\bpaper|study|research|systematic review|academic\b/.test(q)) return "academic_research";
+  return "general_research";
+}
+
 export function makeQueries(question: string, academic = false): string[] {
   const clean = question.replace(/[^a-zA-Z0-9\s?.,'\-]/g, " ").trim().slice(0, 500);
   const queries = [clean, `${clean} latest evidence`, `${clean} limitations and disagreement`];
@@ -169,11 +187,13 @@ export async function conductResearch(question: string, onProgress: (p: Research
   const paidEnabled = env("ENABLE_PAID_SEARCH") === "true";
   const primary = (paidEnabled && (requested === "brave" || requested === "tavily") ? requested : "wikipedia") as ProviderName;
   const academic = (env("ACADEMIC_SEARCH_PROVIDER") || "arxiv") as ProviderName;
-  onProgress({ stage: "planning", detail: "Bounded research plan created", at: Date.now() });
+  const intent = classifyIntent(question);
+  const extraProviders = providersForIntent(intent) as ProviderName[];
+  onProgress({ stage: "planning", detail: `Bounded research plan created for ${intent.replace("_", " ")} intent`, at: Date.now() });
   const queries = makeQueries(question, true);
-  onProgress({ stage: "searching", detail: `Running ${queries.length} live searches across ${primary} and ${academic}`, at: Date.now() });
+  onProgress({ stage: "searching", detail: `Running ${queries.length} live searches across ${primary}, ${academic}, and ${extraProviders.join(", ")}`, at: Date.now() });
   const freeAcademic = [academic, "openalex", "europePmc", "crossref"] as ProviderName[];
-  const planned = queries.map((q, i) => ({ q, provider: i < 2 ? primary : freeAcademic[(i - 2) % freeAcademic.length] }));
+  const planned = queries.map((q, i) => ({ q, provider: i < 2 ? primary : i < 6 ? freeAcademic[(i - 2) % freeAcademic.length] : extraProviders[(i - 6) % Math.max(extraProviders.length, 1)] || "wikidata" }));
   const settled = await Promise.allSettled(planned.map(({ q, provider }) => searchProvider(provider, q)));
   const failures = settled.filter((x): x is PromiseRejectedResult => x.status === "rejected").map((x) => x.reason instanceof Error ? x.reason.message : "Provider failed");
   if (failures.length) onProgress({ stage: "provider-warning", detail: `${failures.length} provider request(s) unavailable; continuing only with completed live results`, at: Date.now() });

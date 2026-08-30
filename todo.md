@@ -65,3 +65,17 @@
 - [x] Add a concrete publish-time OAuth callback and origin checklist tied to the final deployed domain in FULLSTACK_DEPLOYMENT.md.
 - [x] Run a production-mode research.followUp smoke test and verify the follow-up session completes; the built-server follow-up completed successfully.
 - [x] Fetch both initial and follow-up sessions after completion to validate production persistence across both flows; both returned completed answers.
+- [x] Add a generic provider interface and registry so new knowledge adapters do not require research-engine rewrites.
+- [x] Add legitimate free/public adapters for OpenAlex, Europe PMC, Open Library, Wikidata, GitHub, Stack Exchange, and government/open-data discovery where access is permitted; official documentation feeds remain represented through permitted GitHub/Stack Exchange discovery rather than scraping.
+- [x] Add explicit unavailable-provider records for sources without suitable official APIs; never scrape or bypass access controls.
+- [x] Add dynamic intent classification and provider routing for programming, documentation, datasets, books, government, academic research, education, and general research; unsupported video/course providers remain explicitly unavailable.
+- [x] Add provider health/status API, source-type labels, bounded retries with Retry-After handling, User-Agent identification, and existing research-trail observability.
+- [x] Add provider documentation and registry/status tests; external HTTP calls remain optional integration coverage and are not fabricated in unit tests.
+- [x] Run representative acceptance queries in production mode where public endpoints permit, including programming/PostgreSQL and education/AI research; unavailable keyed providers remain visible rather than blocking healthy sources.
+- [x] Add explicit unavailable status entries for unsupported video/course/book providers such as YouTube, Google Books, MIT OpenCourseWare, and freeCodeCamp unless an official adapter is configured.
+- [x] Add education and academic_research routes and tests, plus explicit unavailable video-provider status.
+- [x] Expose a provider health endpoint that executes healthCheck and reports healthy, not_configured, or unavailable; current server health returned HTTP 200 with public and unavailable provider records.
+- [x] Run registry-enabled acceptance queries for education/backpropagation and programming/PostgreSQL against the active server; both completed. The PostgreSQL session persisted providers `wikipedia, arxiv, openalex, europePmc`, planned programming sources `github, stackExchange`, and recorded one provider warning before citation completion.
+- [x] Run a current-registry health check and education acceptance query through the active server; health returned 200 and backpropagation completed.
+- [x] Run a current-registry programming acceptance query through the active server and record provider/routing outcomes; PostgreSQL indexing completed and persisted with its routed provider plan and provider-warning trail inspected.
+- [x] Fetch the completed PostgreSQL acceptance session and verify its routed providers and research-trail messages.

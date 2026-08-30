@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bm25Like, canonicalizeUrl, classifySource, detectContradictions, makeQueries, rankEvidence, reciprocalRankFusion, scoreSource, verifyEvidence } from "./research";
+import { bm25Like, canonicalizeUrl, classifyIntent, classifySource, detectContradictions, makeQueries, rankEvidence, reciprocalRankFusion, scoreSource, verifyEvidence } from "./research";
 
 describe("research primitives", () => {
   it("canonicalizes tracking parameters and fragments", () => {
@@ -40,5 +40,27 @@ describe("research primitives", () => {
   it("produces lexical scores and reciprocal rank fusion values", () => {
     expect(bm25Like("retrieval evidence", ["retrieval improves evidence", "unrelated text"])).toEqual([2, 0]);
     expect(reciprocalRankFusion([[0, 1], [0, 2]])[0]).toBeGreaterThan(reciprocalRankFusion([[0, 1], [0, 2]])[1]);
+  });
+});
+
+import { providerRegistry, providerStatuses, providersForIntent } from "./providers/registry";
+
+describe("knowledge provider registry", () => {
+  it("routes programming and dataset intents to appropriate public providers", () => {
+    expect(classifyIntent("How does PostgreSQL indexing work?")).toBe("programming");
+    expect(providersForIntent("programming")).toContain("github");
+    expect(providersForIntent("dataset")).toContain("worldBank");
+    expect(providersForIntent("education")).toContain("openLibrary");
+    expect(providersForIntent("academic_research")).toContain("wikidata");
+  });
+
+  it("exposes configured and not-configured provider states without fake credentials", () => {
+    const statuses = providerStatuses();
+    expect(statuses.some((status) => status.name === "github" && status.enabled)).toBe(true);
+    const dataGov = statuses.find((status) => status.name === "dataGov");
+    expect(dataGov).toBeDefined();
+    if (!process.env.DATA_GOV_API_KEY) expect(dataGov?.enabled).toBe(false);
+    expect(providerRegistry.get("openLibrary")?.category).toBe("books");
+    expect(statuses.find((status) => status.name === "youtube")?.enabled).toBe(false);
   });
 });
