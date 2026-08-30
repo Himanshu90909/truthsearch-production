@@ -85,7 +85,10 @@
 - [x] Validate the provider-visibility change in the browser so the landing page shows only enabled providers.
 - [x] Save a new reviewable checkpoint after the filtered-provider UI change is verified.
 - [x] Save a latest checkpoint containing the verified provider-visibility UI change.
-- [ ] Inspect the latest local and private GitHub repository state before synchronization.
-- [ ] Push all latest TruthSearch code and documentation to the private GitHub repository.
-- [ ] Add or verify Netlify frontend configuration and document the separate backend requirement.
-- [ ] Validate the synchronized repository and provide the Netlify import handoff.
+- [x] Inspect the latest local and private GitHub repository state before synchronization.
+- [x] Push all latest TruthSearch code and documentation to the private GitHub repository.
+- [x] Add or verify Netlify frontend configuration and document the separate backend requirement.
+- [x] Validate the synchronized repository and provide the Netlify import handoff.
+- [x] Add a Netlify deployment handoff document with import path, build command, publish directory, and the separate-backend requirement.
+- [x] Provide the Netlify import/deployment handoff after verifying the private GitHub repository is up to date.
+- [x] Deliver the verified Netlify import path, build command, publish directory, and separate-backend note to the user.
