@@ -85,3 +85,7 @@
 - [x] Validate the provider-visibility change in the browser so the landing page shows only enabled providers.
 - [x] Save a new reviewable checkpoint after the filtered-provider UI change is verified.
 - [x] Save a latest checkpoint containing the verified provider-visibility UI change.
+- [ ] Inspect the latest local and private GitHub repository state before synchronization.
+- [ ] Push all latest TruthSearch code and documentation to the private GitHub repository.
+- [ ] Add or verify Netlify frontend configuration and document the separate backend requirement.
+- [ ] Validate the synchronized repository and provide the Netlify import handoff.
