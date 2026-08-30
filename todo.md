@@ -46,4 +46,8 @@
 - [x] Create a new private GitHub repository under the authenticated account.
 - [x] Push the complete validated TruthSearch code to the new repository.
 - [x] Validate the new repository and provide the Vercel import/deploy handoff.
-- [ ] Add a concrete Vercel deployment configuration aligned with the Express+tRPC server entry and re-verify the documented environment variables.
+- [x] Add a concrete Vercel deployment configuration aligned with the Express+tRPC server entry and re-verify the documented environment variables. (Frontend manifest added; full backend still requires a compatible Node host.)
+- [x] Scope Vercel support explicitly to frontend-only hosting unless a separate Vercel-compatible serverless adapter is added.
+- [x] Verify and document the environment-variable split between the Vercel frontend and the full-stack Node backend.
+- [x] Audit actual environment-variable usage across client and server files and align the deployment document with code evidence.
+- [x] Run a frontend-only Vercel architecture validation pass against the declared build/output settings.
