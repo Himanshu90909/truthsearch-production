@@ -56,3 +56,12 @@
 - [x] Verify why the Vercel shortcut returns page not found and confirm the repository URL still resolves; the shortcut was not reliable, while the manual Vercel entry point and repository resolve.
 - [x] Provide a reliable manual Vercel import path and explain the private-repository login requirement.
 - [x] Opened the previously shared Vercel shortcut directly; it resolves to Vercel’s New Project page and requires Vercel sign-in before cloning/deploying.
+- [x] Validate the full-stack backend deployment readiness for Express, tRPC, database, OAuth, and live research providers; typecheck, 12 tests, and production build pass.
+- [x] Provide the managed-host Publish handoff for a backend-enabled deployment.
+- [x] Add a concrete managed-host full-stack publish runbook covering environment variables, database, OAuth/domain callbacks, and post-publish checks.
+- [x] Validate backend boot, database/migration readiness, OAuth configuration requirements, and live research behavior for the publish-target runtime as far as the sandbox permits; production bundle boot passed, while publish-only database/OAuth checks remain documented for the user.
+- [x] Run production-mode smoke checks for provider status and a real no-card research query against the built server; provider status returned 200 and the built-server query completed.
+- [x] Validate database-backed session persistence and follow-up behavior in the production runtime where credentials permit; the built-server session completed and returned a persisted answer.
+- [x] Add a concrete publish-time OAuth callback and origin checklist tied to the final deployed domain in FULLSTACK_DEPLOYMENT.md.
+- [x] Run a production-mode research.followUp smoke test and verify the follow-up session completes; the built-server follow-up completed successfully.
+- [x] Fetch both initial and follow-up sessions after completion to validate production persistence across both flows; both returned completed answers.
