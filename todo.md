@@ -97,9 +97,13 @@
 - [x] Apply an actionable deployment fix or document the exact user-side Vercel authorization/configuration step when the issue is external.
 - [x] Re-validate the deployment path and deliver the corrected URL or handoff instructions.
 - [x] Send the user the verified Vercel deployment update, including the working URL, the managed-backend fallback and CORS fix, and the remaining Vercel protection caveat.
-- [x] Replace visible “Manus Agent” branding with “HB Innovators by Himanshu Suthar” across the project where applicable.
+- [x] Replace visible former agent branding with “HB Innovators by Himanshu Suthar” across the project where applicable.
 - [x] Verify the updated branding in the rendered website and publish a new checkpoint.
 - [x] Audit the GitHub repository for visible Manus branding and committed secrets before making it public.
 - [x] Replace the repository-visible Manus branding with “HB Innovators by Himanshu Suthar” and push the change.
 - [x] Make the GitHub repository public after the safety audit and verify its public status.
 - [x] Confirm public branding scope as GitHub README and repository description only; preserve required Manus infrastructure references and the TruthSearch application name.
+- [x] Replace public-facing former agent label text in the GitHub repository with “HB Innovators by Himanshu Suthar.”
+- [x] Place “HB Innovators by Himanshu Suthar” attribution at the top of README.md and verify the public repository.
+- [ ] Remove the remaining literal public the former agent label wording from tracked repository files, including checklist history where necessary.
+- [ ] Commit and push the final README top attribution and re-fetch the public GitHub README to verify it.

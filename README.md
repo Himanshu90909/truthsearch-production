@@ -1,4 +1,6 @@
-# TruthSearch — HB Innovators by Himanshu Suthar
+# HB Innovators by Himanshu Suthar
+
+## TruthSearch
 
 **HB Innovators by Himanshu Suthar** is the creator attribution for this TruthSearch research workspace. TruthSearch is a research workspace for asking arbitrary questions and inspecting the path from live retrieval to cited synthesis. It does not ship a demo answer bank and it does not silently substitute generated content when a provider fails.
 
