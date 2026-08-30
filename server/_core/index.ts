@@ -8,6 +8,9 @@ import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
+import { applyFrontendCors, createFrontendOriginAllowlist } from "./frontendCors";
+
+const allowedFrontendOrigins = createFrontendOriginAllowlist();
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -31,6 +34,17 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 async function startServer() {
   const app = express();
   const server = createServer(app);
+  // Allow the public Vercel frontend to call the managed backend directly when
+  // Vercel Deployment Protection intercepts its same-origin /api path.
+  app.use((req, res, next) => {
+    const allowed = applyFrontendCors(req, res, allowedFrontendOrigins);
+    if (req.method === "OPTIONS") {
+      res.sendStatus(allowed ? 204 : 403);
+      return;
+    }
+    next();
+  });
+
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));

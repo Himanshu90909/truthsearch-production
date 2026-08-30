@@ -10,7 +10,7 @@ Vercel is still **not running the Express server bundle**. The managed full-stac
 
 Import the private repository `Himanshu90909/truthsearch-production` with the repository root as the project root. Use `pnpm install --frozen-lockfile` as the install command and `pnpm build` as the build command. The output directory is `dist/public`, as declared in `vercel.json`.
 
-The deployed Vercel project must be publicly reachable for browser API calls. If Vercel Deployment Protection is enabled on the deployment, it can intercept `/api/*` before the rewrite and return a 302 SSO response. In that case, deploy a public production alias or adjust the Vercel project’s Deployment Protection settings for the public site.
+The deployed Vercel project must be publicly reachable for browser API calls. The client includes a direct fallback for the current Vercel hostname and calls the managed backend at `https://truthsearch-aynnqgr5.manus.space/api/trpc`; the backend now allows that exact public origin with credentialed CORS. The `/api/*` rewrite remains in place for callback/static compatibility. If Vercel Deployment Protection is enabled, it can still intercept the OAuth callback or other `/api/*` paths and return a 302 SSO response. In that case, deploy a public production alias or adjust the Vercel project’s Deployment Protection settings for the public site.
 
 ## Environment-variable split
 
@@ -21,6 +21,7 @@ The deployed Vercel project must be publicly reachable for browser API calls. If
 | Optional backend configuration | `MAX_SEARCH_QUERIES`, `MAX_SOURCES`, `RESEARCH_TIMEOUT_MS`, `MAX_RESEARCH_ROUNDS` | Bound request cost, time, and scope. |
 | Optional paid backend adapters | `ENABLE_PAID_SEARCH=true`, `SEARCH_PROVIDER=brave` or `tavily`, plus the matching provider key | Paid search only when explicitly enabled. |
 | Vercel frontend | `VITE_OAUTH_PORTAL_URL`, `VITE_APP_ID` | Public client configuration referenced directly by the browser bundle. |
+| Optional split frontend | `VITE_API_ORIGIN` | Explicit backend origin override; leave unset on the current Vercel host to use the built-in managed-backend fallback. |
 
 Never put `DATABASE_URL`, `JWT_SECRET`, OAuth server secrets, provider API keys, or `BUILT_IN_FORGE_API_KEY` into Vercel client variables. Never commit `.env` files or tokens. The token previously pasted into chat must remain revoked.
 
