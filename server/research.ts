@@ -1,4 +1,5 @@
 import { invokeLLM } from "./_core/llm";
+import { crossEncoderRank, denseRank } from "./ml";
 
 export type ProviderName = "brave" | "tavily" | "semanticScholar" | "crossref" | "wikipedia" | "arxiv";
 export type ResearchProgress = { stage: string; detail: string; at: number };
@@ -158,7 +159,10 @@ export async function conductResearch(question: string, onProgress: (p: Research
   const sources = (await Promise.all(unique.map(fetchReadable))).filter(Boolean) as SourceRecord[];
   if (!sources.length) throw new Error("Live providers returned no readable public sources. No answer was generated.");
   onProgress({ stage: "ranking", detail: "Ranking passages with lexical retrieval and reciprocal-rank fusion", at: Date.now() });
-  const evidence = extractEvidence(question, sources);
+  let evidence = extractEvidence(question, sources);
+  const denseScores = await denseRank(question, evidence.map((e) => e.quote));
+  const rerankScores = await crossEncoderRank(question, evidence.map((e) => e.quote));
+  evidence = evidence.map((e, i) => ({ ...e, supportScore: Math.round((e.supportScore + (denseScores[i] || 0) * 10 + (rerankScores[i] || 0) * 10) / 2) })).sort((a, b) => b.supportScore - a.supportScore);
   const conflicts = detectContradictions(evidence);
   onProgress({ stage: "verifying", detail: `Mapped ${evidence.length} claims to exact retrieved passages${conflicts.length ? "; detected mixed evidence" : ""}`, at: Date.now() });
   const context = evidence.map((e, i) => `[${i + 1}] ${e.quote} (Source: ${e.title} — ${e.url})`).join("\n");
