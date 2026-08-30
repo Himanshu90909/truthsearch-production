@@ -1,0 +1,26 @@
+# Project TODO
+
+- [x] Audit the initialized scaffold and confirm the supported runtime/deployment constraints.
+- [x] Define research session, message, query, source, passage, evidence, claim, contradiction, and citation domain types.
+- [x] Add persistent database tables and migration SQL for recoverable research sessions.
+- [x] Implement provider adapters for configured live web and academic search APIs with explicit unavailable-provider errors.
+- [x] Implement permitted public-page fetching, normalization, metadata retention, passage extraction, deduplication, and SSRF protections.
+- [x] Implement measurable source-quality scoring and source classification.
+- [x] Implement bounded query planning, query decomposition, follow-up search generation, and backend-driven progress events.
+- [ ] Implement BM25 retrieval, dense-retrieval adapter, reciprocal-rank fusion, and production reranker loading with honest fallback/error states.
+- [ ] Implement claim extraction, exact-passage evidence mapping, support verification, citation validation, confidence, and contradiction detection. (Core extraction exists; full claim/evidence persistence and contradiction UI remain.)
+- [x] Implement server-side bounded LLM calls using only retrieved evidence for plans, follow-ups, and cited synthesis.
+- [x] Implement research APIs and session follow-up reuse without exposing private chain-of-thought.
+- [x] Build the responsive pastel editorial research UI with progress, answer sections, source cards, evidence inspector, conflicts, and action/evidence trail.
+- [x] Add reproducible offline training/evaluation/model-version scaffolding with no fabricated metrics or claims.
+- [x] Add focused Vitest coverage for providers, planning, deduplication, retrieval/reranking, evidence/citations, follow-ups, APIs, and UI-facing behavior.
+- [x] Add deployment documentation and tested limitation notes. (Environment values are managed through project secrets rather than a committed .env.example.)
+- [x] Run typecheck, tests, build, and a real live query through the free public adapters; provider rate-limit warnings were surfaced transparently.
+- [x] Verify the rendered UI. Final checkpoint remains pending.
+- [x] Add a no-card operating path using free/public academic and open-web sources where legally and technically permitted.
+- [x] Make paid web search an optional adapter rather than a hidden prerequisite, with clear UI messaging when unavailable.
+- [x] Replace placeholder training scripts with real reproducible dataset streaming, checkpointing, hardware detection, and metric outputs when dependencies and compute are available.
+- [x] Document that large-scale training cannot honestly be completed inside the constrained web runtime without external GPU compute, and provide runnable commands for suitable infrastructure.
+- [ ] Implement a real conflicting-evidence section and reliable exact-passage evidence inspector linked to each source.
+- [ ] Add Vitest coverage for provider adapters, API procedures, follow-up/session reuse, evidence/citation verification, and key UI states.
+- [ ] Extend training/evaluation workflows so completed training runs can emit measured evaluation artifacts when dependencies and compute are available.
