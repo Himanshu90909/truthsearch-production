@@ -38,3 +38,7 @@
 - [x] Remove any accidental Brave default from the no-card research path.
 - [x] Add free-provider fallback ordering and per-provider rate-limit handling so one 429 does not stop usable research.
 - [x] Run and verify a real no-card query using the corrected defaults.
+- [ ] Inspect the target GitHub repository and preserve any user-owned work safely.
+- [ ] Push the validated TruthSearch project to the target GitHub repository.
+- [ ] Add Vercel deployment configuration and document required environment variables and runtime caveats.
+- [ ] Validate the pushed repository and provide the Vercel import/deployment steps.
