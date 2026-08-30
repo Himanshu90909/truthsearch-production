@@ -5,6 +5,12 @@
   "outputDirectory": "dist/public",
   "framework": null,
   "cleanUrls": true,
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://truthsearch-aynnqgr5.manus.space/api/:path*"
+    }
+  ],
   "headers": [
     {
       "source": "/(.*)",
