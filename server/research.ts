@@ -181,7 +181,9 @@ function extractEvidence(question: string, sources: SourceRecord[]): EvidenceRec
   return all.map((x, i) => ({ claim: x.quote.split(/[.!?]/)[0].trim(), quote: x.quote, url: x.source.canonicalUrl, title: x.source.title, supportScore: Math.min(96, 48 + scores[i] * 8), qualityScore: x.source.qualityScore, sourceId: x.sourceId })).filter((x) => x.supportScore >= 56).sort((a, b) => (b.supportScore + b.qualityScore) - (a.supportScore + a.qualityScore)).slice(0, 12);
 }
 
-export async function conductResearch(question: string, onProgress: (p: ResearchProgress) => void) {
+export type UserAttachments = { contextText?: string; imageUrls?: string[] };
+
+export async function conductResearch(question: string, onProgress: (p: ResearchProgress) => void, userAttachments?: UserAttachments) {
   if (question.trim().length < 8 || question.length > 1200) throw new Error("Question must be between 8 and 1,200 characters.");
   const requested = env("SEARCH_PROVIDER");
   const paidEnabled = env("ENABLE_PAID_SEARCH") === "true";
@@ -213,7 +215,11 @@ export async function conductResearch(question: string, onProgress: (p: Research
   if (!evidence.length) throw new Error("Citation verification rejected all candidate claims; no answer was generated.");
   onProgress({ stage: "verifying", detail: `Verified ${evidence.length} exact passage citations${conflicts.length ? "; detected mixed evidence" : ""}`, at: Date.now() });
   const context = evidence.map((e, i) => `[${i + 1}] ${e.quote} (Source: ${e.title} — ${e.url})`).join("\n");
-  const response = await invokeLLM({ messages: [{ role: "system", content: "You write cautious research answers. Use only the supplied evidence. Every factual sentence must cite [n]. If evidence conflicts, explicitly say evidence is mixed. Never invent URLs, sources, experiments, or facts. Do not reveal private reasoning." }, { role: "user", content: `Question: ${question}\n\nVerified evidence:\n${context}\n\nWrite a concise answer with headings: Key findings, Evidence and limitations, Conflicting evidence, Conclusion. Cite the supplied evidence inline.` }] });
+  const attachmentBlock = userAttachments?.contextText ? `\n\nUSER-PROVIDED DOCUMENT (context the question is about; NOT web evidence — never cite it with [n]):\n${userAttachments.contextText.slice(0, 60000)}` : "";
+  const imageParts = (userAttachments?.imageUrls || []).map((url) => ({ type: "image_url" as const, image_url: { url } }));
+  const instruction = `Question: ${question}${attachmentBlock}\n\nVerified evidence:\n${context}\n\nWrite a concise answer with headings: Key findings, Evidence and limitations, Conflicting evidence, Conclusion. Cite the supplied evidence inline.${imageParts.length ? " The user attached image(s) as visual context; describe what is relevant to the question and clearly separate what comes from the images versus the cited web evidence." : ""}`;
+  const userMessageContent: any = imageParts.length ? [{ type: "text", text: instruction }, ...imageParts] : instruction;
+  const response = await invokeLLM({ messages: [{ role: "system", content: "You write cautious research answers. Use only the supplied evidence and any user-provided attachments. Every factual sentence from web research must cite [n]. If evidence conflicts, explicitly say evidence is mixed. Never invent URLs, sources, experiments, or facts. Do not reveal private reasoning." }, { role: "user", content: userMessageContent }] });
   const answer = typeof response.choices?.[0]?.message?.content === "string" ? response.choices[0].message.content : "The answer generator did not return usable content.";
   onProgress({ stage: "completed", detail: "Citations verified against retrieved URLs", at: Date.now() });
   return { answer, plan: { question, queries, providers: Array.from(new Set(planned.map((x) => x.provider))), bounded: true, evidence, conflicts }, sources, evidence, conflicts, progress: [] as ResearchProgress[] };

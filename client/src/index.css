@@ -132,3 +132,47 @@ button,input { font: inherit; } button,a { cursor: pointer; } button:focus-visib
 .composer .clear-search { width:28px!important; min-width:28px!important; height:28px!important; background:transparent!important; color:#8b7d90!important; }
 .composer .clear-search:hover { background:#f0eaf2!important; color:#5f4c68!important; }
 @media(max-width:640px) { .composer.search-shell { border-radius:15px; padding:9px 10px 10px; } .composer .composer-row > button[type="submit"] { min-width:42px; width:42px; padding:0; } .composer .composer-row > button[type="submit"] span { display:none; } }
+
+/* ===================== Camera capture modal ===================== */
+.camera-backdrop { position:fixed; inset:0; z-index:120; background:rgba(20,15,22,.62); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; padding:16px; }
+.camera-modal { width:min(520px,100%); background:#fff; border-radius:20px; overflow:hidden; box-shadow:0 24px 80px rgba(39,26,45,.35); animation:slide-up .22s ease; }
+.camera-head { display:flex; justify-content:space-between; align-items:center; padding:12px 14px; border-bottom:1px solid rgba(0,0,0,.07); }
+.camera-title { display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; letter-spacing:.02em; }
+.camera-stage { position:relative; background:#141016; aspect-ratio:4/3; display:flex; }
+.camera-feed, .camera-shot { width:100%; height:100%; object-fit:cover; display:block; }
+.camera-feed.mirrored, .camera-shot.mirrored { transform:scaleX(-1); }
+.camera-error { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; text-align:center; color:#f4eef2; padding:22px; }
+.camera-error strong { font-size:15px; }
+.camera-error p { font-size:13px; opacity:.75; max-width:300px; margin:0; }
+.camera-fallback { display:inline-flex; align-items:center; gap:7px; min-height:44px; padding:0 16px; border-radius:12px; border:none; background:#efe9df; color:#292732; font-size:13px; font-weight:600; margin-top:6px; cursor:pointer; }
+.camera-actions { display:flex; justify-content:center; align-items:center; gap:14px; padding:14px; min-height:74px; }
+.camera-btn { display:inline-flex; align-items:center; gap:7px; min-height:44px; padding:0 18px; border-radius:12px; font-size:13px; font-weight:600; cursor:pointer; border:1px solid rgba(0,0,0,.12); background:transparent; color:inherit; }
+.camera-btn.primary { background:#292732; color:#fff; border-color:#292732; }
+.camera-shutter { width:58px; height:58px; border-radius:50%; border:4px solid #fff; background:#fff; box-shadow:0 0 0 3px rgba(41,39,50,.85), 0 6px 18px rgba(0,0,0,.25); cursor:pointer; transition:transform .12s ease; }
+.camera-shutter:active { transform:scale(.9); }
+.app.dark .camera-modal { background:#25222c; }
+.app.dark .camera-head { border-color:rgba(255,255,255,.09); }
+.app.dark .camera-fallback { background:#3a3742; color:#f4eef2; }
+
+/* ===================== Attachment processing + thread thumbs ===================== */
+.attachment-processing { display:flex; align-items:center; gap:8px; font-size:12.5px; color:#6f6a78; padding:8px 4px 2px; }
+.app.dark .attachment-processing { color:#b7b2c0; }
+.thread-attachments { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+.thread-attachments span { display:inline-flex; align-items:center; gap:6px; font-size:12.5px; opacity:.85; background:rgba(0,0,0,.04); border:1px solid rgba(0,0,0,.08); padding:6px 10px; border-radius:10px; max-width:100%; }
+.app.dark .thread-attachments span { background:rgba(255,255,255,.05); border-color:rgba(255,255,255,.1); }
+.thread-attachments img { width:26px; height:26px; object-fit:cover; border-radius:6px; }
+
+/* ===================== Mobile polish ===================== */
+@media (max-width:640px) {
+  .camera-backdrop { padding:0; align-items:flex-end; }
+  .camera-modal { width:100%; border-radius:18px 18px 0 0; max-height:calc(100vh - env(safe-area-inset-bottom, 0px)); }
+  .camera-stage { aspect-ratio:3/4; }
+  .camera-actions { padding-bottom:calc(14px + env(safe-area-inset-bottom, 0px)); }
+  .followup-composer { bottom:calc(10px + env(safe-area-inset-bottom, 0px)); }
+  .followup-suggestions { scrollbar-width:none; }
+  .followup-suggestions::-webkit-scrollbar { display:none; }
+  .attach-button, .icon-button { min-width:44px; min-height:44px; }
+  .answer-copy { overflow-wrap:break-word; }
+  .answer-copy table { display:block; overflow-x:auto; max-width:100%; }
+  .answer-copy pre { max-width:100%; overflow-x:auto; }
+}
