@@ -1,19 +1,23 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
 import {
   ArrowLeft,
   ArrowUpRight,
   BookOpen,
+  Camera as CameraIcon,
   Check,
   ChevronDown,
   CircleAlert,
   Clipboard,
+  FileUp,
   FileText,
   FlaskConical,
   GitBranch,
   Loader2,
   Menu,
   Moon,
+  Paperclip,
+  Plus,
   Search,
   ShieldCheck,
   Sparkles,
@@ -42,6 +46,12 @@ const stageIcons = [BookOpen, Search, FileText, GitBranch, ShieldCheck, Check];
 type Source = { id: number; title: string; url: string; canonicalUrl?: string; domain: string; sourceType: string; qualityScore: number; author?: string | null; publicationDate?: string | null };
 type Evidence = { quote?: string; url?: string; title?: string; supportScore?: number; qualityScore?: number; claim?: string };
 type Conflict = { description: string; supporting?: Array<{ url?: string; title?: string }>; contradicting?: Array<{ url?: string; title?: string }> };
+type Attachment = { id: string; file: File; preview?: string; error?: string };
+
+function formatBytes(size: number) {
+  if (size < 1024 * 1024) return `${Math.max(1, Math.round(size / 1024))} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 function Quality({ score, onClick }: { score: number; onClick?: () => void }) {
   return <button type="button" onClick={onClick} className="quality-score" aria-label={`Source quality ${score} out of 100`}><span>{score}</span><small>/100</small></button>;
@@ -68,6 +78,13 @@ export default function Home() {
   const [showTrace, setShowTrace] = useState(false);
   const [dark, setDark] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState("");
+  const [previewAttachment, setPreviewAttachment] = useState<Attachment | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const photoInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
   const start = trpc.research.start.useMutation({ onSuccess: (data) => setSessionId(data.id) });
   const session = trpc.research.get.useQuery({ id: sessionId || 0 }, { enabled: Boolean(sessionId), refetchInterval: (query) => query.state.data?.session.status === "completed" || query.state.data?.session.status === "failed" ? false : 1200 });
   const plan = trpc.research.plan.useQuery({ question: question || "Research a question with live sources" }, { enabled: question.length >= 8 });
@@ -84,11 +101,26 @@ export default function Home() {
   useEffect(() => { const handler = (e: KeyboardEvent) => { if (e.key === "/" && document.activeElement?.tagName !== "INPUT" && document.activeElement?.tagName !== "TEXTAREA") { e.preventDefault(); document.getElementById("research-input")?.focus(); } if (e.key === "Escape") { setSelectedSource(null); setSidebarOpen(false); } }; window.addEventListener("keydown", handler); return () => window.removeEventListener("keydown", handler); }, []);
   const submit = (e?: React.FormEvent) => { e?.preventDefault(); if (question.trim().length >= 8) { setSessionId(null); start.mutate({ question: question.trim() }); } };
   const sourceEvidence = selectedSource ? evidence.find((item) => item.url === selectedSource.canonicalUrl || item.url === selectedSource.url || item.title === selectedSource.title) : null;
+  const addFiles = (fileList: FileList | null, kind: "document" | "photo" = "document") => {
+    if (!fileList) return;
+    setAttachmentError("");
+    const next: Attachment[] = [];
+    Array.from(fileList).forEach((file) => {
+      const isPhoto = file.type.startsWith("image/");
+      const allowed = kind === "photo" ? ["image/jpeg", "image/png", "image/webp"] : ["application/pdf", "text/plain", "text/csv", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"];
+      if (!allowed.includes(file.type) && !(kind === "document" && /\.(pdf|txt|csv|doc|docx|xlsx)$/i.test(file.name))) { setAttachmentError(`${file.name}: That file type isn't supported yet.`); return; }
+      if (file.size > 20 * 1024 * 1024) { setAttachmentError(`${file.name}: Files must be smaller than 20 MB.`); return; }
+      next.push({ id: `${file.name}-${file.lastModified}-${Math.random()}`, file, preview: isPhoto ? URL.createObjectURL(file) : undefined });
+    });
+    setAttachments((current) => [...current, ...next].slice(0, 8));
+    setAttachmentMenuOpen(false);
+  };
+  const removeAttachment = (id: string) => setAttachments((current) => { const item = current.find((x) => x.id === id); if (item?.preview) URL.revokeObjectURL(item.preview); return current.filter((x) => x.id !== id); });
 
   return <div className={dark ? "app dark" : "app"}>
     <header className="topbar"><button className="mobile-menu icon-button" onClick={() => setSidebarOpen(true)} aria-label="Open navigation"><Menu size={19} /></button><Logo /><nav aria-label="Primary navigation"><a href="#research">Research</a><a href="#history">History</a><a href="#about">About</a><button type="button" className="icon-button" onClick={() => setDark(!dark)} aria-label="Toggle theme">{dark ? <Sun size={16} /> : <Moon size={16} />}</button></nav></header>
     {!sessionId ? <main className="landing" id="research">
-      <section className="hero"><div className="eyebrow">Evidence before certainty</div><h1>Research anything.<br /><em>Verify everything.</em></h1><p>Search the web, compare evidence, and understand what the sources actually say.</p><form className="search-shell" onSubmit={submit}><Search size={20} /><textarea id="research-input" value={question} onChange={(e) => setQuestion(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }} placeholder="Ask anything..." aria-label="Research question" rows={1} /><kbd>/</kbd>{question && <button type="button" className="clear-search" onClick={() => setQuestion("")} aria-label="Clear research question"><X size={15} /></button>}<button type="submit" disabled={start.isPending || question.trim().length < 8}>{start.isPending ? <Loader2 className="spin" size={17} /> : <ArrowUpRight size={18} />}<span>Research</span></button></form>{start.error && <div className="error-message"><CircleAlert size={15} />{start.error.message}</div>}<div className="suggestions"><span>Try asking</span>{examples.map((x) => <button key={x} onClick={() => setQuestion(x)} type="button">{x}</button>)}</div></section>
+      <section className="hero"><div className="eyebrow">Evidence before certainty</div><h1>Research anything.<br /><em>Verify everything.</em></h1><p>Search the web, compare evidence, and understand what the sources actually say.</p><form className={`search-shell composer ${attachmentMenuOpen ? "menu-open" : ""}`} onSubmit={submit} onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add("drag-over"); }} onDragLeave={(e) => e.currentTarget.classList.remove("drag-over")} onDrop={(e) => { e.preventDefault(); e.currentTarget.classList.remove("drag-over"); addFiles(e.dataTransfer.files); }}><input ref={fileInputRef} hidden type="file" multiple accept=".pdf,.doc,.docx,.txt,.csv,.xlsx" onChange={(e) => addFiles(e.target.files)} /><input ref={photoInputRef} hidden type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={(e) => addFiles(e.target.files, "photo")} /><input ref={cameraInputRef} hidden type="file" accept="image/*" capture="environment" onChange={(e) => addFiles(e.target.files, "photo")} />{attachments.length > 0 && <div className="attachment-list">{attachments.slice(0, 4).map((item) => <div className="attachment-chip" key={item.id}>{item.preview ? <button type="button" onClick={() => setPreviewAttachment(item)} aria-label={`Preview ${item.file.name}`}><img src={item.preview} alt="" /></button> : <FileUp size={16} />}<span title={item.file.name}>{item.file.name}</span><small>{formatBytes(item.file.size)}</small><button type="button" onClick={() => removeAttachment(item.id)} aria-label={`Remove attachment ${item.file.name}`}><X size={14} /></button></div>)}{attachments.length > 4 && <span className="more-attachments">+{attachments.length - 4} more</span>}</div>}<div className="composer-row"><div className="attach-wrap"><button type="button" className="attach-button" onClick={() => setAttachmentMenuOpen(!attachmentMenuOpen)} aria-label="Add attachment" aria-expanded={attachmentMenuOpen}><Plus size={19} /></button>{attachmentMenuOpen && <div className="attachment-menu" role="menu"><button type="button" onClick={() => fileInputRef.current?.click()}><FileUp size={16} /> Add document</button><button type="button" onClick={() => photoInputRef.current?.click()}><Paperclip size={16} /> Select photo</button><button type="button" onClick={() => cameraInputRef.current?.click()}><CameraIcon /> Take photo</button><span>Files stay in this composer until research starts.</span></div>}</div><textarea id="research-input" value={question} onChange={(e) => setQuestion(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }} placeholder={attachments.length ? "Ask anything about these files..." : "Ask anything..."} aria-label="Research question" rows={1} /><kbd>/</kbd>{question && <button type="button" className="clear-search" onClick={() => setQuestion("")} aria-label="Clear research question"><X size={15} /></button>}<button type="submit" disabled={start.isPending || question.trim().length < 8}>{start.isPending ? <Loader2 className="spin" size={17} /> : <ArrowUpRight size={18} />}<span>Research</span></button></div>{attachmentError && <div className="attachment-error" role="alert"><CircleAlert size={14} />{attachmentError}</div>}</form>{start.error && <div className="error-message"><CircleAlert size={15} />{start.error.message}</div>}<div className="suggestions"><span>Try asking</span>{examples.map((x) => <button key={x} onClick={() => setQuestion(x)} type="button">{x}</button>)}</div></section>
       <section className="pipeline" id="how-it-works"><div className="eyebrow">A transparent research process</div>{[[BookOpen, "Question", "Define what needs to be known."], [Search, "Search", "Find relevant live sources."], [ShieldCheck, "Verify", "Check claims against passages."], [FlaskConical, "Synthesize", "Make uncertainty visible."]].map(([Icon, label, detail]) => { const I = Icon as typeof BookOpen; return <div className="pipeline-step" key={label as string}><div className="pipeline-icon"><I size={17} /></div><div><strong>{label as string}</strong><p>{detail as string}</p></div></div>; })}</section>
       <section className="landing-foot" id="about"><span>Evidence before certainty.</span><span>{providerStatus.data?.knowledge?.filter((p: any) => p.enabled).length || 0} knowledge providers ready</span>{plan.data && <span>{plan.data.queries.length} queries previewed</span>}</section>
     </main> : <main className="workspace">
@@ -106,6 +138,7 @@ export default function Home() {
       </section></div>
     </main>}
     {sidebarOpen && <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)}><aside className="mobile-sidebar" onClick={(e) => e.stopPropagation()}><button className="close-button" onClick={() => setSidebarOpen(false)} aria-label="Close navigation"><X size={18} /></button><Logo /><button className="sidebar-new" onClick={() => { setSessionId(null); setQuestion(""); setSidebarOpen(false); }}><Sparkles size={15} /> New research</button><div className="eyebrow">Recent research</div><p className="sidebar-empty">Your completed research will appear here.</p></aside></div>}
+    {previewAttachment?.preview && <div className="preview-backdrop" onClick={() => setPreviewAttachment(null)}><div className="image-preview" role="dialog" aria-modal="true" aria-label={`Preview ${previewAttachment.file.name}`} onClick={(e) => e.stopPropagation()}><button className="close-button" onClick={() => setPreviewAttachment(null)} aria-label="Close image preview"><X size={18} /></button><img src={previewAttachment.preview} alt={previewAttachment.file.name} /><strong>{previewAttachment.file.name}</strong><span>{formatBytes(previewAttachment.file.size)}</span><button className="remove-preview" onClick={() => { removeAttachment(previewAttachment.id); setPreviewAttachment(null); }}>Remove attachment</button></div></div>}
     {selectedSource && <div className="drawer-backdrop" onClick={() => setSelectedSource(null)}><aside className="inspector" onClick={(e) => e.stopPropagation()}><button className="close-button" onClick={() => setSelectedSource(null)} aria-label="Close source inspector"><X size={18} /></button><div className="eyebrow">Source inspector</div><h2>{selectedSource.title}</h2><p className="domain">{selectedSource.domain} · {selectedSource.sourceType}</p><Quality score={selectedSource.qualityScore} /><hr /><div className="eyebrow">Relevant passage</div><blockquote>{sourceEvidence?.quote || "No verified exact passage was mapped to this source."}</blockquote>{sourceEvidence?.claim && <><div className="eyebrow">Claim supported</div><p>{sourceEvidence.claim}</p></>}<button className="primary-link" onClick={() => navigator.clipboard?.writeText(`${selectedSource.title} — ${selectedSource.url}`)}><Clipboard size={14} /> Copy citation</button><a className="primary-link" href={selectedSource.url} target="_blank" rel="noreferrer">Open original source <ArrowUpRight size={15} /></a></aside></div>}
   </div>;
 }

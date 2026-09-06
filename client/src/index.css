@@ -69,3 +69,33 @@ kbd { min-width:22px; padding:3px 6px; border:1px solid #e2dbe5; border-radius:5
 @keyframes slide-right { from { transform:translateX(-30px); opacity:.6; } to { transform:translateX(0); opacity:1; } }
 @media (max-width:900px) { .mobile-menu { display:grid; } .topbar { gap:12px; } .topbar .brand { margin-right:auto; } .workspace-sidebar { display:none; } .workspace-grid { display:block; } }
 @media (max-width:640px) { .hero h1 { font-size:46px; } .hero > p { max-width:340px; } .search-shell { align-items:flex-end; } .search-shell textarea { min-height:44px; } .source-strip { gap:6px; } .source-strip .eyebrow { width:100%; margin-bottom:2px; } .document-answer .answer-copy { font-size:15px; } .inspector { width:100%; height:auto; max-height:82vh; margin-top:auto; border-radius:18px 18px 0 0; animation:slide-up .22s ease; } @keyframes slide-up { from { transform:translateY(30px); opacity:.6; } to { transform:translateY(0); opacity:1; } } }
+
+/* Multimodal search composer */
+.composer { position:relative; display:block; padding:10px 12px 12px; text-align:left; }
+.composer.drag-over { border-color:#90779b; background:#fbf7fc; box-shadow:0 0 0 3px rgba(144,119,155,.12); }
+.composer.drag-over::after { content:'Drop files to research'; position:absolute; inset:0; z-index:3; display:grid; place-items:center; border:1px dashed #9b82a6; border-radius:13px; color:#6d5878; background:rgba(251,247,252,.96); font:500 12px 'DM Mono',monospace; text-transform:uppercase; letter-spacing:.1em; }
+.composer-row { display:flex; align-items:center; gap:9px; }
+.composer-row textarea { min-height:39px; padding:8px 0; }
+.attach-wrap { position:relative; }
+.attach-button { display:grid; place-items:center; width:32px; height:32px; border:1px solid #ded4e2; border-radius:50%; color:#786382; background:#faf7fb; }
+.attach-button:hover { color:#4f3e59; border-color:#ad98b8; background:#f1e9f3; transform:rotate(8deg); }
+.attachment-menu { position:absolute; z-index:4; left:0; bottom:43px; width:205px; padding:7px; border:1px solid #e3d9e6; border-radius:11px; background:#fffdfa; box-shadow:0 15px 35px rgba(63,43,72,.14); }
+.attachment-menu button { width:100%; display:flex; align-items:center; gap:9px; padding:10px; border:0; border-radius:7px; color:#5c4c64; background:transparent; font-size:12px; text-align:left; }
+.attachment-menu button:hover { background:#f4eef6; }
+.attachment-menu span { display:block; padding:8px 9px 5px; color:#a194a5; font-size:9px; line-height:1.4; }
+.attachment-list { display:flex; flex-wrap:wrap; gap:7px; margin-bottom:9px; padding-bottom:8px; border-bottom:1px solid #eee8ef; }
+.attachment-chip { max-width:230px; min-height:32px; display:flex; align-items:center; gap:6px; padding:4px 7px; border:1px solid #e3dbe6; border-radius:8px; color:#65576b; background:#fcfafc; font-size:10px; }
+.attachment-chip > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.attachment-chip small { color:#a093a5; white-space:nowrap; font-size:9px; }
+.attachment-chip button { display:grid; place-items:center; flex:0 0 auto; padding:0; border:0; color:#89798e; background:transparent; }
+.attachment-chip img { width:25px; height:25px; object-fit:cover; border-radius:5px; }
+.more-attachments { align-self:center; color:#85758b; font:10px 'DM Mono',monospace; }
+.attachment-error { display:flex; align-items:center; gap:6px; padding:7px 2px 0; color:#a04f56; font-size:11px; }
+.preview-backdrop { position:fixed; inset:0; z-index:30; display:grid; place-items:center; padding:20px; background:rgba(34,27,39,.48); }
+.image-preview { position:relative; width:min(520px,100%); display:flex; flex-direction:column; align-items:center; gap:8px; padding:25px; border:1px solid #e4dce6; border-radius:15px; background:#fffdfa; box-shadow:0 25px 70px rgba(36,23,43,.22); }
+.image-preview .close-button { position:absolute; top:12px; right:12px; }
+.image-preview img { width:100%; max-height:60vh; object-fit:contain; border-radius:9px; background:#f5f0f6; }
+.image-preview strong { max-width:90%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#4d3e56; font-size:13px; }
+.image-preview span { color:#968a9a; font-size:11px; }
+.remove-preview { margin-top:7px; padding:8px 13px; border:1px solid #e2c8cb; border-radius:7px; color:#99565d; background:#fff8f8; font-size:11px; }
+@media (max-width:640px) { .attachment-menu { position:fixed; left:12px; right:12px; bottom:12px; width:auto; padding:10px; border-radius:16px; box-shadow:0 12px 45px rgba(39,26,45,.2); } .attachment-menu button { min-height:46px; font-size:13px; } .attachment-menu span { padding:9px; } .attachment-chip { max-width:calc(100vw - 80px); } }
