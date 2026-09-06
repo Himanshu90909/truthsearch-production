@@ -8,7 +8,6 @@ import {
   ChevronDown,
   CircleAlert,
   Clipboard,
-  ExternalLink,
   FileText,
   FlaskConical,
   GitBranch,
@@ -85,7 +84,7 @@ export default function Home() {
   const sourceEvidence = selectedSource ? evidence.find((item) => item.url === selectedSource.canonicalUrl || item.url === selectedSource.url || item.title === selectedSource.title) : null;
 
   return <div className={dark ? "app dark" : "app"}>
-    <header className="topbar"><Logo /><nav aria-label="Primary navigation"><a href="#research">Research</a><a href="#how-it-works">How it works</a><a href="#about">About</a><button type="button" className="icon-button" onClick={() => setDark(!dark)} aria-label="Toggle theme">{dark ? <Sun size={16} /> : <Moon size={16} />}</button><a href="https://github.com/Himanshu90909/truthsearch-production" target="_blank" rel="noreferrer" aria-label="TruthSearch on GitHub">GitHub <ExternalLink size={13} /></a></nav></header>
+    <header className="topbar"><Logo /><nav aria-label="Primary navigation"><a href="#research">Research</a><a href="#how-it-works">How it works</a><a href="#about">About</a><button type="button" className="icon-button" onClick={() => setDark(!dark)} aria-label="Toggle theme">{dark ? <Sun size={16} /> : <Moon size={16} />}</button></nav></header>
     {!sessionId ? <main className="landing" id="research">
       <section className="hero"><div className="eyebrow">AI-powered research engine</div><h1>Research the web.<br /><em>Verify what you find.</em></h1><p>Ask a question and follow the evidence from search to verified conclusion.</p><form className="search-shell" onSubmit={submit}><Search size={20} /><input id="research-input" value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="What would you like to research?" aria-label="Research question" /><kbd>/</kbd><button type="submit" disabled={start.isPending || question.trim().length < 8}>{start.isPending ? <Loader2 className="spin" size={17} /> : <ArrowUpRight size={18} />}<span>Research</span></button></form>{start.error && <div className="error-message"><CircleAlert size={15} />{start.error.message}</div>}<div className="suggestions"><span>Try a research topic</span>{examples.map((x) => <button key={x} onClick={() => setQuestion(x)} type="button">{x}</button>)}</div></section>
       <section className="pipeline" id="how-it-works"><div className="eyebrow">A transparent research process</div>{[[BookOpen, "Question", "Define what needs to be known."], [Search, "Search", "Find relevant live sources."], [ShieldCheck, "Verify", "Check claims against passages."], [FlaskConical, "Synthesize", "Make uncertainty visible."]].map(([Icon, label, detail]) => { const I = Icon as typeof BookOpen; return <div className="pipeline-step" key={label as string}><div className="pipeline-icon"><I size={17} /></div><div><strong>{label as string}</strong><p>{detail as string}</p></div></div>; })}</section>
