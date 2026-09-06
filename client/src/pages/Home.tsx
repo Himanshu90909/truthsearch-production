@@ -1,36 +1,108 @@
 import { useEffect, useMemo, useState } from "react";
 import { Streamdown } from "streamdown";
-import { ArrowUpRight, BookOpen, Check, CircleAlert, CornerDownRight, Loader2, Search, ShieldCheck, Sparkles } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
-import { Card } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
+import {
+  ArrowLeft,
+  ArrowUpRight,
+  BookOpen,
+  Check,
+  ChevronDown,
+  CircleAlert,
+  Clipboard,
+  ExternalLink,
+  FileText,
+  FlaskConical,
+  GitBranch,
+  Loader2,
+  Moon,
+  Search,
+  ShieldCheck,
+  Sparkles,
+  Sun,
+  X,
+} from "lucide-react";
 import { trpc } from "@/lib/trpc";
 
-const examples = ["What are the strongest recent approaches to reducing RAG hallucinations?", "Compare PostgreSQL and MongoDB for large-scale analytics.", "What changed in AI agents this week?"];
+const examples = [
+  "Are AI agents reliable?",
+  "How accurate are LLMs?",
+  "What causes AI hallucinations?",
+  "Latest research on RAG",
+];
 const stages = ["planning", "searching", "fetching", "ranking", "verifying", "completed"];
+const stageLabels: Record<string, string> = {
+  planning: "Planning research",
+  searching: "Searching sources",
+  fetching: "Fetching evidence",
+  ranking: "Ranking sources",
+  verifying: "Verifying claims",
+  completed: "Synthesis complete",
+};
+const stageIcons = [BookOpen, Search, FileText, GitBranch, ShieldCheck, Check];
+
+type Source = { id: number; title: string; url: string; canonicalUrl?: string; domain: string; sourceType: string; qualityScore: number; author?: string | null; publicationDate?: string | null };
+type Evidence = { quote?: string; url?: string; title?: string; supportScore?: number; qualityScore?: number; claim?: string };
+type Conflict = { description: string; supporting?: Array<{ url?: string; title?: string }>; contradicting?: Array<{ url?: string; title?: string }> };
+
+function Quality({ score, onClick }: { score: number; onClick?: () => void }) {
+  return <button type="button" onClick={onClick} className="quality-score" aria-label={`Source quality ${score} out of 100`}><span>{score}</span><small>/100</small></button>;
+}
+
+function Logo() {
+  return <div className="brand"><span className="brand-mark"><Sparkles size={16} /></span><span>TruthSearch</span></div>;
+}
+
+function Progress({ data, latestProgress, activeStage }: { data: any; latestProgress: string; activeStage: number }) {
+  return <div className="progress-card" aria-live="polite">
+    <div className="eyebrow">Research progress</div>
+    <div className="progress-list">
+      {stages.map((stage, i) => { const Icon = stageIcons[i]; const done = data?.session?.status === "completed" || i < activeStage; const active = !done && i === activeStage; return <div className={`progress-item ${done ? "done" : ""} ${active ? "active" : ""}`} key={stage}><span className="progress-icon">{done ? <Check size={14} /> : active ? <Loader2 size={14} className="spin" /> : <Icon size={14} />}</span><div><strong>{stageLabels[stage]}</strong><p>{active ? latestProgress : done ? "Evidence step complete" : i === activeStage + 1 ? "Waiting for verification" : "Queued"}</p></div></div>; })}
+    </div>
+  </div>;
+}
 
 export default function Home() {
   const [question, setQuestion] = useState("");
   const [sessionId, setSessionId] = useState<number | null>(null);
-  const [expanded, setExpanded] = useState<number | null>(null);
+  const [selectedSource, setSelectedSource] = useState<Source | null>(null);
+  const [expandedSource, setExpandedSource] = useState<number | null>(null);
+  const [showTrace, setShowTrace] = useState(false);
+  const [dark, setDark] = useState(false);
   const start = trpc.research.start.useMutation({ onSuccess: (data) => setSessionId(data.id) });
   const session = trpc.research.get.useQuery({ id: sessionId || 0 }, { enabled: Boolean(sessionId), refetchInterval: (query) => query.state.data?.session.status === "completed" || query.state.data?.session.status === "failed" ? false : 1200 });
   const plan = trpc.research.plan.useQuery({ question: question || "Research a question with live sources" }, { enabled: question.length >= 8 });
   const providerStatus = trpc.research.providers.useQuery();
   const data = session.data as any;
-  const evidence = (data?.session?.plan?.evidence || data?.evidence || []) as Array<{ quote?: string; url?: string; title?: string; supportScore?: number; qualityScore?: number }>;
-  const conflicts = (data?.session?.plan?.conflicts || []) as Array<{ description: string; supporting?: Array<{ url?: string; title?: string }>; contradicting?: Array<{ url?: string; title?: string }> }>;
-  const latestProgress = data?.messages.filter((m: any) => m.role === "system").at(-1)?.content || "Ready for a question";
-  const activeStage = stages.findIndex((s) => latestProgress.toLowerCase().includes(s));
-  const displayedStages = useMemo(() => stages.map((stage, i) => ({ stage, done: Boolean(data?.session.status === "completed" || i < Math.max(0, activeStage)) })), [data?.session.status, activeStage]);
+  const sources = (data?.sources || []) as Source[];
+  const evidence = (data?.session?.plan?.evidence || data?.evidence || []) as Evidence[];
+  const conflicts = (data?.session?.plan?.conflicts || []) as Conflict[];
+  const latestProgress = data?.messages?.filter((m: any) => m.role === "system").at(-1)?.content || "Ready for a question";
+  const activeStage = Math.max(0, stages.findIndex((s) => latestProgress.toLowerCase().includes(s)));
+  const confidence = Math.round(evidence.length ? evidence.slice(0, 6).reduce((sum, item) => sum + (item.supportScore || item.qualityScore || 70), 0) / Math.min(evidence.length, 6) : 0);
 
   useEffect(() => { if (start.error) setSessionId(null); }, [start.error]);
-  const submit = (e: React.FormEvent) => { e.preventDefault(); if (question.trim().length >= 8) { setSessionId(null); start.mutate({ question: question.trim() }); } };
+  useEffect(() => { const handler = (e: KeyboardEvent) => { if (e.key === "/" && document.activeElement?.tagName !== "INPUT") { e.preventDefault(); document.getElementById("research-input")?.focus(); } if (e.key === "Escape") setSelectedSource(null); }; window.addEventListener("keydown", handler); return () => window.removeEventListener("keydown", handler); }, []);
+  const submit = (e?: React.FormEvent) => { e?.preventDefault(); if (question.trim().length >= 8) { setSessionId(null); start.mutate({ question: question.trim() }); } };
+  const sourceEvidence = selectedSource ? evidence.find((item) => item.url === selectedSource.canonicalUrl || item.url === selectedSource.url || item.title === selectedSource.title) : null;
 
-  return <div className="min-h-screen bg-[#faf8fb] text-[#575064]">
-    <header className="mx-auto flex max-w-7xl items-center justify-between px-6 py-6 lg:px-10"><div className="flex items-center gap-3"><div className="grid h-9 w-9 place-items-center rounded-full bg-gradient-to-br from-[#cdb7e8] via-[#f2c7d9] to-[#b9ddd2] text-white"><Sparkles size={17}/></div><span className="font-serif text-xl tracking-wide text-[#655777]">TruthSearch</span></div><div className="flex items-center gap-3 text-[11px] uppercase tracking-[0.24em] text-[#9c91a8]"><span className="hidden sm:inline">Evidence before certainty</span><span className="h-2 w-2 rounded-full bg-[#a9d5c9]"/>Live research</div></header>
-    {!sessionId ? <main className="mx-auto grid max-w-7xl gap-14 px-6 pb-24 pt-14 lg:grid-cols-[1.1fr_.9fr] lg:px-10 lg:pt-24"><section className="relative"><div className="editorial-bracket absolute -left-3 -top-8 h-20 w-20"/><p className="mb-5 text-[11px] uppercase tracking-[0.32em] text-[#a89bb5]">A research instrument for the open web</p><h1 className="max-w-3xl font-serif text-5xl leading-[1.05] text-[#625473] sm:text-7xl">Ask a question.<br/><em className="font-normal text-[#9d7f9f]">See what holds.</em></h1><p className="mt-8 max-w-xl text-lg leading-8 text-[#887e91]">TruthSearch follows live sources, academic literature, and the evidence between them—so every answer can be inspected, challenged, and traced.</p><form onSubmit={submit} className="mt-10 max-w-2xl"><div className="flex items-center gap-2 rounded-2xl border border-[#e6ddea] bg-white/80 p-2 shadow-[0_18px_60px_rgba(137,108,155,.10)] focus-within:border-[#cbb4da]"><Search className="ml-3 text-[#b19fc1]" size={20}/><Input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="What would you like to research?" className="h-12 border-0 bg-transparent text-base shadow-none focus-visible:ring-0" aria-label="Research question"/><Button type="submit" disabled={start.isPending || question.trim().length < 8} className="h-12 rounded-xl bg-[#71627f] px-5 text-white hover:bg-[#5e506b]">{start.isPending ? <Loader2 className="animate-spin"/> : <ArrowUpRight/>}<span className="hidden sm:inline">Research</span></Button></div>{start.error && <p className="mt-3 flex items-center gap-2 text-sm text-rose-700"><CircleAlert size={15}/>{start.error.message}</p>}</form><div className="mt-6 flex flex-wrap gap-2">{examples.map((x) => <button key={x} onClick={() => setQuestion(x)} className="rounded-full border border-[#eadfed] bg-white/60 px-3 py-2 text-left text-xs text-[#897b91] transition hover:border-[#cdb7e8] hover:bg-white">{x}</button>)}</div></section><aside className="relative border-l border-[#e9dfec] pl-8 lg:mt-16"><div className="absolute -left-px top-0 h-24 w-px bg-gradient-to-b from-[#cdb7e8] to-transparent"/><p className="text-[11px] uppercase tracking-[0.3em] text-[#a89bb5]">How it works</p><div className="mt-8 space-y-7">{[[BookOpen,"Plan the question","Break the prompt into bounded searches."],[Search,"Search live sources","Use configured web and academic providers."],[ShieldCheck,"Verify the evidence","Map claims to exact passages and real URLs."]].map(([Icon,title,detail]) => { const I = Icon as typeof BookOpen; return <div key={title as string} className="flex gap-4"><div className="mt-1 grid h-9 w-9 shrink-0 place-items-center rounded-full bg-[#f1e8f5] text-[#9b7fac]"><I size={17}/></div><div><h3 className="font-serif text-xl text-[#6b5a78]">{title as string}</h3><p className="mt-1 text-sm leading-6 text-[#93889b]">{detail as string}</p></div></div>})}</div><Separator className="my-10 bg-[#e9dfec]"/><p className="max-w-sm text-sm leading-6 text-[#91869a]">No static answers. No fabricated sources. If a required provider is unavailable, the research stops and tells you why.</p>{providerStatus.data?.knowledge?.length ? <div className="mt-8"><p className="mb-3 text-[10px] uppercase tracking-[.25em] text-[#a89bb5]">Available knowledge sources</p><div className="flex flex-wrap gap-2">{providerStatus.data.knowledge.filter((provider) => provider.enabled).map((provider) => <span key={provider.name} className="rounded-full bg-[#e2f1ec] px-2.5 py-1 text-[11px] text-[#568b7c]">{provider.name} · ready</span>)}</div></div> : null}{plan.data && <div className="mt-8"><p className="mb-3 text-[10px] uppercase tracking-[.25em] text-[#a89bb5]">Previewed search plan</p><div className="space-y-2">{plan.data.queries.slice(0,3).map((q) => <div key={q} className="rounded-lg bg-white/60 px-3 py-2 text-xs text-[#81738b]">{q}</div>)}</div></div>}</aside></main> : <main className="mx-auto max-w-7xl px-6 pb-24 pt-8 lg:px-10"><div className="mb-10 flex flex-col gap-5 border-b border-[#e7ddea] pb-8 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-[11px] uppercase tracking-[.3em] text-[#a89bb5]">Research session {sessionId}</p><h1 className="mt-3 max-w-4xl font-serif text-4xl leading-tight text-[#625473]">{data?.session.question || question}</h1></div><button onClick={() => {setSessionId(null); setQuestion("")}} className="text-xs uppercase tracking-[.2em] text-[#9d849f] hover:text-[#6d5978]">New research</button></div><div className="grid gap-8 lg:grid-cols-[260px_1fr]"><aside className="space-y-6"><Card className="border-[#eadfed] bg-white/60 p-5 shadow-none"><p className="text-[10px] uppercase tracking-[.25em] text-[#a89bb5]">Research trail</p><div className="mt-5 space-y-4">{displayedStages.map(({stage,done}) => <div key={stage} className="flex items-center gap-3 text-sm capitalize"><span className={`grid h-6 w-6 place-items-center rounded-full ${done ? "bg-[#d7eee7] text-[#578c7e]" : "bg-[#f2edf4] text-[#a89bb5]"}`}>{done ? <Check size={13}/> : <span className="h-1.5 w-1.5 rounded-full bg-current"/>}</span>{stage}</div>)}</div><p className="mt-6 text-xs leading-5 text-[#9a8e9f]">{latestProgress}</p></Card>{data?.session.plan && <Card className="border-[#eadfed] bg-white/60 p-5 shadow-none"><p className="text-[10px] uppercase tracking-[.25em] text-[#a89bb5]">Plan</p><div className="mt-4 space-y-2">{(data.session.plan as any).queries?.map((q: string) => <p key={q} className="text-xs leading-5 text-[#85798c]">{q}</p>)}</div></Card>}</aside><section className="space-y-8">{conflicts.length > 0 && <Card className="border-amber-200 bg-amber-50/60 p-6"><div className="flex items-center gap-2 font-medium text-amber-900"><CircleAlert size={18}/> Conflicting evidence</div><p className="mt-2 text-sm leading-6 text-amber-800">{conflicts[0]?.description}</p><div className="mt-4 grid gap-3 sm:grid-cols-2"><div className="rounded-lg bg-white/60 p-3 text-xs text-amber-900"><strong>Supporting language</strong><p className="mt-1">{conflicts[0]?.supporting?.map((x) => x.title || x.url).join(" · ")}</p></div><div className="rounded-lg bg-white/60 p-3 text-xs text-amber-900"><strong>Limiting language</strong><p className="mt-1">{conflicts[0]?.contradicting?.map((x) => x.title || x.url).join(" · ")}</p></div></div></Card>}{data?.session.status === "failed" && <Card className="border-rose-200 bg-rose-50/70 p-6 text-rose-800"><div className="flex items-center gap-2 font-medium"><CircleAlert size={18}/> Research stopped without generating an answer</div><p className="mt-2 text-sm">{data.session.error}</p></Card>}{data?.session.answer && <Card className="border-[#eadfed] bg-white/80 p-7 shadow-[0_18px_60px_rgba(137,108,155,.08)] sm:p-10"><div className="mb-6 flex items-center justify-between"><Badge className="bg-[#e2f1ec] text-[#568b7c] hover:bg-[#e2f1ec]">Evidence-grounded</Badge><span className="text-xs text-[#a296aa]">{data.sources.length} sources retrieved</span></div><div className="prose prose-slate max-w-none prose-headings:font-serif prose-headings:font-normal prose-headings:text-[#685675] prose-p:text-[#776d80] prose-a:text-[#936e9c]"><Streamdown>{data.session.answer}</Streamdown></div></Card>}{data?.sources.length ? <div><div className="mb-4 flex items-center justify-between"><h2 className="font-serif text-2xl text-[#6b5a78]">Sources & evidence</h2><span className="text-xs uppercase tracking-[.18em] text-[#a89bb5]">Inspectable</span></div><div className="grid gap-3">{data.sources.map((source: any, i: number) => <Card key={source.id} className="border-[#eadfed] bg-white/55 p-5 shadow-none"><div className="flex items-start justify-between gap-4"><div><p className="text-[10px] uppercase tracking-[.2em] text-[#aa94ae]">{source.sourceType} · {source.domain}</p><h3 className="mt-2 font-serif text-xl text-[#6e5b78]">{source.title}</h3></div><span className="rounded-full bg-[#f4edf6] px-3 py-1 text-xs text-[#8c7095]">Quality {source.qualityScore}</span></div><div className="mt-4 flex items-center justify-between"><button onClick={() => setExpanded(expanded === i ? null : i)} className="text-xs text-[#987ca0] underline underline-offset-4">{expanded === i ? "Hide passage" : "Inspect source"}</button><a href={source.url} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-xs text-[#987ca0]">Open URL <ArrowUpRight size={13}/></a></div>{expanded === i && <div className="mt-4 border-l-2 border-[#d7c2df] bg-[#faf7fb] p-4 text-sm leading-6 text-[#7f7186]">{evidence.find((e) => e.url === source.canonicalUrl || e.url === source.url || e.title === source.title)?.quote || "No verified exact passage was mapped to this source."}</div>}</Card>)}</div></div> : data?.session.status !== "failed" && <div className="grid place-items-center py-24 text-center"><Loader2 className="mb-4 animate-spin text-[#b49ac1]"/><p className="font-serif text-2xl text-[#6f5c7b]">Researching in the open...</p><p className="mt-2 text-sm text-[#968a9d]">Only completed backend actions appear in the trail.</p></div>}</section></div></main>}
+  return <div className={dark ? "app dark" : "app"}>
+    <header className="topbar"><Logo /><nav aria-label="Primary navigation"><a href="#research">Research</a><a href="#how-it-works">How it works</a><a href="#about">About</a><button type="button" className="icon-button" onClick={() => setDark(!dark)} aria-label="Toggle theme">{dark ? <Sun size={16} /> : <Moon size={16} />}</button><a href="https://github.com/Himanshu90909/truthsearch-production" target="_blank" rel="noreferrer" aria-label="TruthSearch on GitHub">GitHub <ExternalLink size={13} /></a></nav></header>
+    {!sessionId ? <main className="landing" id="research">
+      <section className="hero"><div className="eyebrow">AI-powered research engine</div><h1>Research the web.<br /><em>Verify what you find.</em></h1><p>Ask a question and follow the evidence from search to verified conclusion.</p><form className="search-shell" onSubmit={submit}><Search size={20} /><input id="research-input" value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="What would you like to research?" aria-label="Research question" /><kbd>/</kbd><button type="submit" disabled={start.isPending || question.trim().length < 8}>{start.isPending ? <Loader2 className="spin" size={17} /> : <ArrowUpRight size={18} />}<span>Research</span></button></form>{start.error && <div className="error-message"><CircleAlert size={15} />{start.error.message}</div>}<div className="suggestions"><span>Try a research topic</span>{examples.map((x) => <button key={x} onClick={() => setQuestion(x)} type="button">{x}</button>)}</div></section>
+      <section className="pipeline" id="how-it-works"><div className="eyebrow">A transparent research process</div>{[[BookOpen, "Question", "Define what needs to be known."], [Search, "Search", "Find relevant live sources."], [ShieldCheck, "Verify", "Check claims against passages."], [FlaskConical, "Synthesize", "Make uncertainty visible."]].map(([Icon, label, detail]) => { const I = Icon as typeof BookOpen; return <div className="pipeline-step" key={label as string}><div className="pipeline-icon"><I size={17} /></div><div><strong>{label as string}</strong><p>{detail as string}</p></div></div>; })}</section>
+      <section className="landing-foot" id="about"><span>Evidence before certainty.</span><span>{providerStatus.data?.knowledge?.filter((p: any) => p.enabled).length || 0} knowledge providers ready</span>{plan.data && <span>{plan.data.queries.length} queries previewed</span>}</section>
+    </main> : <main className="workspace">
+      <div className="workspace-head"><button className="back-button" onClick={() => { setSessionId(null); setQuestion(""); }}><ArrowLeft size={16} /> New research</button><div className="status-pill"><span className="status-dot" />{data?.session?.status === "completed" ? "Research complete" : data?.session?.status === "failed" ? "Research interrupted" : "Researching"}</div></div>
+      <div className="question-row"><div><div className="eyebrow">Current research question</div><h1>{data?.session?.question || question}</h1></div><span className="session-label">Session {sessionId}</span></div>
+      <div className="workspace-grid"><aside><Progress data={data} latestProgress={latestProgress} activeStage={activeStage} />{data?.session?.plan?.queries?.length > 0 && <div className="mini-card"><div className="eyebrow">Search plan</div>{data.session.plan.queries.map((q: string) => <p key={q}>{q}</p>)}</div>}</aside><section className="results">
+        {data?.session?.status === "failed" && <div className="alert-card error-card"><CircleAlert size={19} /><div><strong>Research couldn’t be completed.</strong><p>Some sources could not be retrieved. Your available evidence is still shown below.</p><button onClick={() => submit()}>Retry</button></div></div>}
+        {data?.session?.answer && <article className="answer-panel"><div className="panel-heading"><div><div className="eyebrow">Research answer</div><h2>Evidence-backed conclusion</h2></div><div className="confidence"><span>Overall confidence</span><strong>{confidence}%</strong><div className="confidence-bar"><i style={{ width: `${confidence}%` }} /></div></div></div><div className="answer-copy"><Streamdown>{data.session.answer}</Streamdown></div></article>}
+        {data?.session?.answer && <div className="section-heading"><div><div className="eyebrow">Claim-level verification</div><h2>What the evidence says</h2></div><span>{evidence.length} verified passages</span></div>}
+        {data?.session?.answer && <div className="claims">{evidence.slice(0, 5).map((item, i) => <details key={`${item.title}-${i}`}><summary><span className="verified"><Check size={13} /> Verified</span><span>{item.claim || item.quote}</span><ChevronDown size={16} /></summary><div className="claim-detail"><strong>Claim #{i + 1}</strong><p>{item.quote}</p><span>Supported by a verified passage · {item.supportScore || item.qualityScore || confidence}% confidence</span></div></details>)}</div>}
+        {conflicts.length > 0 && <div className="conflict-card"><div className="conflict-title"><CircleAlert size={18} /><div><div className="eyebrow">Conflicting evidence</div><h2>Sources disagree</h2></div></div><p>{conflicts[0].description}</p><div className="conflict-columns"><div><strong>Supporting</strong>{(conflicts[0].supporting || []).map((x, i) => <span key={i}><Check size={13} />{x.title || x.url}</span>)}</div><div><strong>Contradicting</strong>{(conflicts[0].contradicting || []).map((x, i) => <span key={i}><CircleAlert size={13} />{x.title || x.url}</span>)}</div></div></div>}
+        {sources.length > 0 ? <section className="evidence-section"><div className="section-heading"><div><div className="eyebrow">Evidence library</div><h2>Sources behind the answer</h2></div><span>{sources.length} sources</span></div><div className="evidence-grid">{sources.map((source, i) => { const item = evidence.find((e) => e.url === source.canonicalUrl || e.url === source.url || e.title === source.title); return <article className="evidence-card" key={source.id}><div className="source-meta"><span>{source.sourceType}</span><Quality score={source.qualityScore} onClick={() => setSelectedSource(source)} /></div><h3>{source.title}</h3><p className="domain">{source.domain}{source.publicationDate ? ` · ${source.publicationDate}` : ""}</p>{item?.quote && <blockquote>{item.quote}</blockquote>}<div className="card-actions"><button onClick={() => setSelectedSource(source)}><FileText size={14} /> Inspect evidence</button><a href={source.url} target="_blank" rel="noreferrer">Open source <ArrowUpRight size={14} /></a><button aria-label="Copy citation" onClick={() => navigator.clipboard?.writeText(`${source.title} — ${source.url}`)}><Clipboard size={14} /></button></div></article>; })}</div></section> : data?.session?.status !== "failed" && <div className="empty-state"><Loader2 className="spin" size={22} /><h2>Researching in the open</h2><p>{latestProgress}</p></div>}
+        {data?.session?.answer && <div className="trace-wrap"><button className="trace-toggle" onClick={() => setShowTrace(!showTrace)}><GitBranch size={16} />Research trace<ChevronDown className={showTrace ? "rotate" : ""} size={16} /></button>{showTrace && <div className="trace"><span>Query</span><span>Search plan</span><span>Searches performed</span><span>Sources discovered</span><span>Evidence extracted</span><span>Claims verified</span><span>Final synthesis</span></div>}</div>}
+      </section></div>
+    </main>}
+    {selectedSource && <div className="drawer-backdrop" onClick={() => setSelectedSource(null)}><aside className="inspector" onClick={(e) => e.stopPropagation()}><button className="close-button" onClick={() => setSelectedSource(null)} aria-label="Close source inspector"><X size={18} /></button><div className="eyebrow">Source inspector</div><h2>{selectedSource.title}</h2><p className="domain">{selectedSource.domain} · {selectedSource.sourceType}</p><Quality score={selectedSource.qualityScore} /><hr /><div className="eyebrow">Relevant passage</div><blockquote>{sourceEvidence?.quote || "No verified exact passage was mapped to this source."}</blockquote>{sourceEvidence?.claim && <><div className="eyebrow">Claim supported</div><p>{sourceEvidence.claim}</p></>}<a className="primary-link" href={selectedSource.url} target="_blank" rel="noreferrer">Open original source <ArrowUpRight size={15} /></a></aside></div>}
   </div>;
 }
