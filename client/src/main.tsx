@@ -77,8 +77,10 @@ function researchTrpcFetch(input: RequestInfo | URL, init?: RequestInit): Promis
   if (method === "POST" && /\/research\.(start|followUp)(\?|$)/.test(url)) {
     const isFollowUp = url.includes("research.followUp");
     return (async () => {
-      const raw = init?.body ? JSON.parse(String(init.body)) : [];
-      const first = Array.isArray(raw) ? raw[0] : raw;
+      const raw = init?.body ? JSON.parse(String(init.body)) : {};
+      // tRPC v11 httpBatchLink sends batched ops as arrayToDict: {"0":{"json":{...}}}
+      const rawOps = Array.isArray(raw) ? raw : [raw["0"] ?? raw];
+      const first = rawOps[0];
       const parsedInput = ((first?.json ?? first ?? {}) as ResearchInput);
       let question = parsedInput.question || "";
       let contextText = parsedInput.contextText;
@@ -101,8 +103,9 @@ function researchTrpcFetch(input: RequestInfo | URL, init?: RequestInit): Promis
     return (async () => {
       const parsedUrl = new URL(url);
       const rawInput = parsedUrl.searchParams.get("input");
-      const decoded = rawInput ? JSON.parse(rawInput) : [];
-      const first = Array.isArray(decoded) ? decoded[0] : decoded;
+      const decoded = rawInput ? JSON.parse(rawInput) : {};
+      // Batched query inputs arrive as {"0":{"json":{"id":...}}}
+      const first = Array.isArray(decoded) ? decoded[0] : (decoded["0"] ?? decoded);
       const id = (first?.json ?? first)?.id as number | undefined;
       const payload = researchCache.get(id as number);
       if (!payload) {
