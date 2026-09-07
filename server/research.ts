@@ -193,7 +193,15 @@ export async function callSynthesisLLM(params: Parameters<typeof invokeLLM>[0], 
         failures.push(`${model} returned HTTP ${res.status}: ${detail}`);
         continue;
       }
-      return (await res.json()) as Awaited<ReturnType<typeof invokeLLM>>;
+      const data = (await res.json()) as Awaited<ReturnType<typeof invokeLLM>>;
+      const rawContent = data.choices?.[0]?.message?.content;
+      const content = typeof rawContent === "string" ? rawContent : Array.isArray(rawContent) ? rawContent.map((part) => typeof part === "string" ? part : "text" in part ? part.text : "").join("") : "";
+      if (!content.trim()) {
+        // Reasoning models can exhaust tokens on hidden reasoning and return null content — cascade instead of answering blank.
+        failures.push(`${model} returned an empty answer (reasoning did not complete)`);
+        continue;
+      }
+      return data;
     } catch (error) {
       failures.push(`${model}: ${error instanceof Error ? error.message : "request failed"}`);
     }
