@@ -5,10 +5,15 @@
   "outputDirectory": "dist/public",
   "framework": null,
   "cleanUrls": true,
+  "functions": {
+    "api/index.ts": {
+      "maxDuration": 300
+    }
+  },
   "rewrites": [
     {
-      "source": "/api/:path*",
-      "destination": "https://truthsearch-aynnqgr5.manus.space/api/:path*"
+      "source": "/api/(.*)",
+      "destination": "/api/index"
     }
   ],
   "headers": [

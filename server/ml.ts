@@ -1,4 +1,16 @@
-import { embedTexts, cosineSimilarity } from "./embeddings";
+// Transformers.js is loaded lazily through a computed specifier so bundlers
+// tracing static imports for serverless builds (Vercel) cannot pull the
+// multi-hundred-MB ONNX runtime into the function bundle. Locally and in
+// Docker the import resolves normally and semantic ranking works fully.
+type EmbedModule = typeof import("./embeddings");
+let embedModule: EmbedModule | null = null;
+async function getEmbedModule(): Promise<EmbedModule> {
+  if (!embedModule) {
+    const specifier = ["./embeddings"].join("");
+    embedModule = (await import(/* webpackIgnore: true */ specifier)) as EmbedModule;
+  }
+  return embedModule;
+}
 
 export type RankedPassage = { text: string; lexicalScore: number; denseScore?: number; rerankScore?: number };
 
@@ -17,6 +29,7 @@ export async function denseRank(query: string, passages: string[]): Promise<numb
   // what actually gives the app real semantic relevance signal in the no-card deployment.
   if (process.env.DISABLE_LOCAL_EMBEDDINGS === "true") return passages.map(() => 0);
   try {
+    const { embedTexts, cosineSimilarity } = await getEmbedModule();
     const [queryEmbedding, ...passageEmbeddings] = await embedTexts([query, ...passages]);
     return passageEmbeddings.map((embedding) => cosineSimilarity(queryEmbedding, embedding));
   } catch {
