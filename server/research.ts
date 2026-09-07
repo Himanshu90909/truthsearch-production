@@ -162,27 +162,43 @@ export function scoreSource(hit: SearchHit, domain: string, relevance = 0): numb
 // User-attached images are passed to it as vision input. If the key is absent
 // the call fails explicitly rather than substituting generated content.
 
-const SYNTHESIS_MODEL = "meta-models/Muse-Glimmer-30B";
+// Internal model routing (the user never picks a model — the pipeline picks one):
+// trending top HF models served through Inference Providers, with automatic cascade.
 const SYNTHESIS_ENDPOINT = "https://router.huggingface.co/v1/chat/completions";
+const SYNTHESIS_MODELS: Record<"vision" | "code" | "general", string[]> = {
+  vision: ["zai-org/GLM-5.3-Flash", "meta-models/Muse-Glimmer-30B"], // image-text-to-text
+  code: ["deepseek-ai/DeepSeek-V4-Flash-0731", "zai-org/GLM-5.3"], // technical/code answers
+  general: ["zai-org/GLM-5.3", "deepseek-ai/DeepSeek-V4-Flash-0731"],
+};
 
 export function synthesisModelConfigured(): boolean {
   return Boolean(env("HF_API_KEY"));
 }
 
-export async function callSynthesisLLM(params: Parameters<typeof invokeLLM>[0]): Promise<Awaited<ReturnType<typeof invokeLLM>>> {
+export async function callSynthesisLLM(params: Parameters<typeof invokeLLM>[0], kind: "vision" | "code" | "general" = "general"): Promise<Awaited<ReturnType<typeof invokeLLM>>> {
   const apiKey = env("HF_API_KEY");
   if (!apiKey) throw new Error("Synthesis model is not configured: HF_API_KEY is missing. No answer was generated.");
-  const res = await fetch(SYNTHESIS_ENDPOINT, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({ model: SYNTHESIS_MODEL, messages: params.messages, temperature: 0.2 }),
-    signal: AbortSignal.timeout(Math.max(timeoutMs, 120000)),
-  });
-  if (!res.ok) {
-    const detail = (await res.text().catch(() => "")).slice(0, 200);
-    throw new Error(`Synthesis model ${SYNTHESIS_MODEL} returned HTTP ${res.status}: ${detail}`);
+  const candidates = SYNTHESIS_MODELS[kind];
+  const failures: string[] = [];
+  for (const model of candidates) {
+    try {
+      const res = await fetch(SYNTHESIS_ENDPOINT, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ model, messages: params.messages, temperature: 0.2 }),
+        signal: AbortSignal.timeout(Math.max(timeoutMs, 120000)),
+      });
+      if (!res.ok) {
+        const detail = (await res.text().catch(() => "")).slice(0, 200);
+        failures.push(`${model} returned HTTP ${res.status}: ${detail}`);
+        continue;
+      }
+      return (await res.json()) as Awaited<ReturnType<typeof invokeLLM>>;
+    } catch (error) {
+      failures.push(`${model}: ${error instanceof Error ? error.message : "request failed"}`);
+    }
   }
-  return (await res.json()) as Awaited<ReturnType<typeof invokeLLM>>;
+  throw new Error(`All synthesis models failed for this ${kind} question (${candidates.join(" -> ")}): ${failures.join("; ")}`);
 }
 
 // Summarize page-fetch failures so operators can see WHY sources were dropped
@@ -353,7 +369,7 @@ export async function conductResearch(question: string, onProgress: (p: Research
   const imageParts = (userAttachments?.imageUrls || []).map((url) => ({ type: "image_url" as const, image_url: { url } }));
   const instruction = `Question: ${question}${attachmentBlock}\n\nVerified evidence:\n${context}\n\n${technicalQuestion ? "This is a technical question. Answer it directly, completely, and practically from your own expertise: explain the concept, give concrete examples, and where useful include correct, runnable code. Use the retrieved evidence only where it genuinely helps, citing it with [n]; otherwise answer without citations.\n\n" : ""}${fromKnowledgeOnly ? "The retrieved web evidence is empty, so answer entirely from your own knowledge. Do NOT use [n] citations at all — there are no sources to cite.\n\n" : ""}Write a research answer with exactly these sections, in this order:\n\n## Direct answer\n2-4 sentences that directly answer the question${evidence.length ? ", with inline [n] citations" : ""}.\n\n## Why it happens — analysis\nExplain the underlying causes, mechanisms, and context behind the answer, the way a knowledgeable person would explain it to a curious reader: what drives the phenomenon, how the pieces connect, and what it means in practice. Reason across the evidence instead of only restating quotes. Every factual statement from web research must cite [n].\n\n## Evidence and sources\nThe strongest retrieved evidence that supports the analysis, cited inline.\n\n## Conflicting evidence\nOnly if the retrieved sources disagree or the evidence is mixed; otherwise state that retrieved sources are consistent.\n\n## Limitations\nWhat the retrieved evidence cannot answer, and how current or complete it is.\n\n## Conclusion\n2-3 closing sentences with citations.\n\n## Suggested follow-up questions\nExactly three questions a reader would naturally ask next, one per line, each on its own as a list item.${imageParts.length ? " The user attached image(s) as visual context; describe what is relevant to the question and clearly separate what comes from the images versus the cited web evidence." : ""}`;
   const userMessageContent: any = imageParts.length ? [{ type: "text", text: instruction }, ...imageParts] : instruction;
-  const response = await callSynthesisLLM({ messages: [{ role: "system", content: "You are a research analyst. You write answers that research like a search engine and explain like a teacher: direct, then causal — what happens, why it happens, and what it means. Every factual sentence that comes from the retrieved evidence must cite [n]. If the retrieved evidence does not answer part of the question, fill the gap from your own knowledge and mark those sentences inline with 'model knowledge' so the reader can tell what is sourced and what is not. If evidence conflicts, explicitly say evidence is mixed. Never invent URLs, sources, citations, or fake [n] references, and never present model-knowledge claims as cited facts. Do not reveal private reasoning." }, { role: "user", content: userMessageContent }] });
+  const response = await callSynthesisLLM({ messages: [{ role: "system", content: "You are a research analyst. You write answers that research like a search engine and explain like a teacher: direct, then causal — what happens, why it happens, and what it means. Every factual sentence that comes from the retrieved evidence must cite [n]. If the retrieved evidence does not answer part of the question, fill the gap from your own knowledge and mark those sentences inline with 'model knowledge' so the reader can tell what is sourced and what is not. If evidence conflicts, explicitly say evidence is mixed. Never invent URLs, sources, citations, or fake [n] references, and never present model-knowledge claims as cited facts. Do not reveal private reasoning." }, { role: "user", content: userMessageContent }] }, imageParts.length ? "vision" : technicalQuestion ? "code" : "general");
   const answer = typeof response.choices?.[0]?.message?.content === "string" ? response.choices[0].message.content : "The answer generator did not return usable content.";
   const citationAudit = auditCitationReferences(answer, evidence.length);
   if (citationAudit.invalidReferences.length) throw new Error(`Answer contained invalid citation reference(s): ${citationAudit.invalidReferences.join(", ")}`);

@@ -101,7 +101,25 @@ describe("single synthesis backend", () => {
     await expect(callSynthesisLLM({ messages: [{ role: "user", content: "hi" }] })).rejects.toThrow(/HF_API_KEY is missing/);
     process.env = before;
   });
-  it("calls the hardwired Muse-Glimmer-30B endpoint and passes user images through as vision input", async () => {
+  it("cascades to the next trending model when the first one fails, by question kind", async () => {
+    const before = { ...process.env };
+    process.env.HF_API_KEY = "hf_test_token";
+    const { callSynthesisLLM } = await import("./research");
+    const originalFetch = globalThis.fetch;
+    const seen: string[] = [];
+    globalThis.fetch = (async (_url: any, init: any) => {
+      const body = JSON.parse(init.body);
+      seen.push(body.model);
+      if (body.model === "deepseek-ai/DeepSeek-V4-Flash-0731") return new Response("boom", { status: 503 });
+      return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 });
+    }) as any;
+    const result = await callSynthesisLLM({ messages: [{ role: "user", content: "code question" }] }, "code");
+    globalThis.fetch = originalFetch;
+    expect(seen).toEqual(["deepseek-ai/DeepSeek-V4-Flash-0731", "zai-org/GLM-5.3"]);
+    expect(result.choices?.[0]?.message?.content).toBe("ok");
+    process.env = before;
+  });
+  it("calls the hardwired vision model and passes user images through as vision input", async () => {
     const before = { ...process.env };
     process.env.HF_API_KEY = "hf_test_token";
     const { callSynthesisLLM } = await import("./research");
@@ -111,11 +129,11 @@ describe("single synthesis backend", () => {
       calls.push({ url: String(url), body: JSON.parse(init.body), auth: init.headers.authorization });
       return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200, headers: { "content-type": "application/json" } });
     }) as any;
-    const result = await callSynthesisLLM({ messages: [{ role: "user", content: [{ type: "text", text: "what is in this image?" }, { type: "image_url", image_url: { url: "data:image/png;base64,eHh4" } }] }] });
+    const result = await callSynthesisLLM({ messages: [{ role: "user", content: [{ type: "text", text: "what is in this image?" }, { type: "image_url", image_url: { url: "data:image/png;base64,eHh4" } }] }] }, "vision");
     globalThis.fetch = originalFetch;
     expect(calls[0].url).toBe("https://router.huggingface.co/v1/chat/completions");
     expect(calls[0].auth).toBe("Bearer hf_test_token");
-    expect(calls[0].body.model).toBe("meta-models/Muse-Glimmer-30B");
+    expect(calls[0].body.model).toBe("zai-org/GLM-5.3-Flash");
     expect(calls[0].body.messages[0].content[1].type).toBe("image_url");
     expect(result.choices?.[0]?.message?.content).toBe("ok");
     process.env = before;

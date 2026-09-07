@@ -16,13 +16,17 @@ A session creates bounded query variants, calls live providers, canonicalizes an
 
 Answers are written in a fixed structure — Direct answer, Why it happens (causal analysis), Evidence and sources, Conflicting evidence, Limitations, Conclusion, Suggested follow-up questions — so a question is not answered with a bare list of sources. The synthesis model is instructed to explain the mechanisms and causes behind the answer in plain language, reasoning across the retrieved evidence, while every factual sentence still cites the retrieved passages. The citation audit rejects any answer whose `[n]` references do not exist in the retrieved evidence.
 
-## Answer model
+## Answer models
 
-The synthesis backend is a single fixed model, the way Perplexity runs one pipeline: `meta-models/Muse-Glimmer-30B`, an image-text-to-text model served through Hugging Face Inference Providers and called via `https://router.huggingface.co/v1/chat/completions`. The model is not trained, fine-tuned, or hosted in this repository; it is called as a remote service. The only required secret is `HF_API_KEY`. If it is missing, synthesis fails explicitly rather than substituting generated content.
+The backend routes each question to the best trending open model served on Hugging Face Inference Providers — internally, like Perplexity, with no model picker in the UI:
 
-User-attached images are passed to the model as vision input: a user can attach an image and ask about it, and the model answers from what it sees, while any web-research facts still come only from the retrieved, cited evidence.
+- **General research answers:** `zai-org/GLM-5.3`, falling back to `deepseek-ai/DeepSeek-V4-Flash-0731`
+- **Technical and code questions:** `deepseek-ai/DeepSeek-V4-Flash-0731`, falling back to `zai-org/GLM-5.3`
+- **Image questions:** `zai-org/GLM-5.3-Flash` (image-text-to-text), falling back to `meta-models/Muse-Glimmer-30B`
 
-## Always answering, honestly labeled
+All calls go through the OpenAI-compatible Hugging Face router (`https://router.huggingface.co/v1/chat/completions`); the only required secret is `HF_API_KEY`. Models are never trained or hosted here — they are called as remote services. If every model in a route fails, synthesis fails explicitly with the per-model reasons; nothing is fabricated. Attached images are passed as vision input, so a user can upload an image and ask about it.
+
+Always answering, honestly labeled
 
 Every question gets an answer. When live research cannot answer the question — no readable sources, no verifiable passages, or a technical/programming question the web results do not address — the model answers from its own knowledge instead of failing, and the answer is labeled for what it is: sentences from the model carry an inline 'model knowledge' mark, and a knowledge-only answer opens with an explicit notice that nothing is web-cited. Answers grounded in retrieved evidence keep their [n] citations. The citation audit still rejects any invalid reference, and a missing HF_API_KEY still fails explicitly rather than fabricating.
 
