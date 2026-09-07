@@ -82,3 +82,42 @@ describe("knowledge provider registry", () => {
     expect(statuses.find((status) => status.name === "youtube")?.enabled).toBe(false);
   });
 });
+
+describe("synthesis provider resolution", () => {
+  it("uses the managed built-in LLM when no custom endpoint is configured", async () => {
+    const before = { ...process.env };
+    delete process.env.LLM_BASE_URL; delete process.env.LLM_API_KEY; delete process.env.LLM_MODEL;
+    delete process.env.HF_API_KEY; delete process.env.HF_MODEL;
+    const { resolveSynthesisProvider } = await import("./research");
+    expect(resolveSynthesisProvider()).toEqual({ kind: "managed" });
+    process.env = before;
+  });
+  it("routes to a custom OpenAI-compatible endpoint when LLM_BASE_URL/LLM_API_KEY/LLM_MODEL are set", async () => {
+    const before = { ...process.env };
+    process.env.LLM_BASE_URL = "https://router.huggingface.co/v1";
+    process.env.LLM_API_KEY = "hf_test_token";
+    process.env.LLM_MODEL = "meta-models/Muse-Glimmer-30B";
+    const { resolveSynthesisProvider } = await import("./research");
+    expect(resolveSynthesisProvider()).toEqual({ kind: "custom", baseUrl: "https://router.huggingface.co/v1", apiKey: "hf_test_token", model: "meta-models/Muse-Glimmer-30B" });
+    process.env = before;
+  });
+  it("treats HF_API_KEY as an alias implying the Hugging Face inference router", async () => {
+    const before = { ...process.env };
+    delete process.env.LLM_BASE_URL; delete process.env.LLM_API_KEY; delete process.env.LLM_MODEL;
+    process.env.HF_API_KEY = "hf_alias_token";
+    process.env.HF_MODEL = "meta-models/Muse-Glimmer-30B";
+    const { resolveSynthesisProvider } = await import("./research");
+    expect(resolveSynthesisProvider()).toEqual({ kind: "custom", baseUrl: "https://router.huggingface.co/v1", apiKey: "hf_alias_token", model: "meta-models/Muse-Glimmer-30B" });
+    process.env = before;
+  });
+  it("never silently fabricates: incomplete custom config falls back to managed, and a missing managed key fails explicitly at call time", async () => {
+    const before = { ...process.env };
+    process.env.LLM_BASE_URL = "https://example.invalid/v1";
+    delete process.env.LLM_API_KEY; delete process.env.LLM_MODEL;
+    delete process.env.HF_API_KEY; delete process.env.HF_MODEL;
+    const { resolveSynthesisProvider, callSynthesisLLM } = await import("./research");
+    expect(resolveSynthesisProvider()).toEqual({ kind: "managed" });
+    await expect(callSynthesisLLM({ messages: [{ role: "user", content: "hi" }] })).rejects.toThrow(/not configured|OPENAI_API_KEY/);
+    process.env = before;
+  });
+});

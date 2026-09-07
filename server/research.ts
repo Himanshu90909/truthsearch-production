@@ -153,22 +153,80 @@ export function scoreSource(hit: SearchHit, domain: string, relevance = 0): numb
   return Math.max(5, Math.min(score, 98));
 }
 
-async function fetchReadable(hit: SearchHit, question: string): Promise<SourceRecord | null> {
+// ---------------------------------------------------------------------------
+// Synthesis LLM resolution
+//
+// The managed runtime supplies the built-in server-side LLM via BUILT_IN_FORGE_*.
+// For self-hosted or custom deployments (and for stronger explanatory answers),
+// any OpenAI-compatible chat-completions endpoint can be used instead, e.g.:
+//
+//   LLM_BASE_URL=https://router.huggingface.co/v1
+//   LLM_API_KEY=<hf token>
+//   LLM_MODEL=meta-models/Muse-Glimmer-30B
+//
+// HF_API_KEY + HF_MODEL are accepted as convenient aliases that imply the
+// Hugging Face Inference Providers router. The model itself is never trained or
+// hosted here; it is called as a remote service. If nothing is configured the
+// managed built-in LLM is used, and if that is missing too the call fails
+// explicitly rather than substituting generated content.
+
+export type SynthesisProvider =
+  | { kind: "managed" }
+  | { kind: "custom"; baseUrl: string; apiKey: string; model: string };
+
+export function resolveSynthesisProvider(): SynthesisProvider {
+  const baseUrl = env("LLM_BASE_URL") || (env("HF_API_KEY") ? "https://router.huggingface.co/v1" : "");
+  const apiKey = env("LLM_API_KEY") || env("HF_API_KEY");
+  const model = env("LLM_MODEL") || env("HF_MODEL");
+  if (baseUrl && apiKey && model) return { kind: "custom", baseUrl, apiKey, model };
+  return { kind: "managed" };
+}
+
+export async function callSynthesisLLM(params: Parameters<typeof invokeLLM>[0]): Promise<Awaited<ReturnType<typeof invokeLLM>>> {
+  const provider = resolveSynthesisProvider();
+  if (provider.kind === "managed") return invokeLLM(params);
+  const url = `${provider.baseUrl.replace(/\/$/, "")}/chat/completions`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${provider.apiKey}` },
+    body: JSON.stringify({ model: provider.model, messages: params.messages, temperature: 0.2 }),
+    signal: AbortSignal.timeout(Math.max(timeoutMs, 120000)),
+  });
+  if (!res.ok) {
+    const detail = (await res.text().catch(() => "")).slice(0, 200);
+    throw new Error(`Synthesis model ${provider.model} returned HTTP ${res.status}: ${detail}`);
+  }
+  return (await res.json()) as Awaited<ReturnType<typeof invokeLLM>>;
+}
+
+// Summarize page-fetch failures so operators can see WHY sources were dropped
+// instead of a silent all-null result (transparency: completed actions only).
+function summarizeFetchFailures(failures: string[]): string {
+  const counts = new Map<string, number>();
+  for (const failure of failures) {
+    const reason = failure.replace(/^[^:]+: /, "");
+    counts.set(reason, (counts.get(reason) || 0) + 1);
+  }
+  return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).map(([reason, count]) => `${count} ${reason}`).join(", ");
+}
+
+async function fetchReadable(hit: SearchHit, question: string, failures?: string[]): Promise<SourceRecord | null> {
   try {
     assertSafeUrl(hit.url);
     const canonicalUrl = canonicalizeUrl(hit.url);
+    const domain = new URL(canonicalUrl).hostname;
     const res = await fetch(canonicalUrl, { signal: AbortSignal.timeout(timeoutMs), headers: { "user-agent": "TruthSearch/1.0 (research; contact project owner)" } });
-    if (!res.ok) return null;
+    if (!res.ok) { failures?.push(`${domain}: blocked or error (HTTP ${res.status})`); return null; }
     const type = res.headers.get("content-type") || "";
-    if (!type.includes("text/html") && !type.includes("text/plain") && !type.includes("application/json")) return null;
+    if (!type.includes("text/html") && !type.includes("text/plain") && !type.includes("application/json")) { failures?.push(`${domain}: unsupported content-type`); return null; }
     const raw = (await res.text()).slice(0, 120000);
     const content = raw.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>|<[^>]+>/gi, " ").replace(/\s+/g, " ").trim();
-    if (content.length < 80) return null;
+    if (content.length < 80) { failures?.push(`${domain}: no readable text`); return null; }
     const u = new URL(canonicalUrl);
     const passages = content.match(/.{1,900}(?:[.!?]|$)/g)?.map((x) => x.trim()).filter((x) => x.length > 100).slice(0, 30) || [content.slice(0, 900)];
     const relevance = queryContentRelevance(question, `${hit.title} ${hit.snippet} ${content}`);
     return { ...hit, canonicalUrl, domain: u.hostname, sourceType: classifySource(u.hostname, hit.provider), qualityScore: scoreSource(hit, u.hostname, relevance), content, passages, relevance };
-  } catch { return null; }
+  } catch (error) { failures?.push(`${new URL(hit.url).hostname}: ${error instanceof Error ? error.name === "TimeoutError" ? "timed out" : error.message.slice(0, 60) : "fetch failed"}`); return null; }
 }
 
 export function classifyIntent(question: string): string {
@@ -289,8 +347,10 @@ export async function conductResearch(question: string, onProgress: (p: Research
   if (!hits.length) throw new Error(`All required live providers were unavailable. ${failures.join("; ")}`);
   const unique = Array.from(new Map(hits.filter((x) => x.url).map((x) => { try { return [canonicalizeUrl(x.url), x] as const; } catch { return [x.url, x] as const; } })).values()).slice(0, maxSources);
   onProgress({ stage: "fetching", detail: `Fetched ${unique.length} unique live search results; normalizing permitted public pages`, at: Date.now() });
-  const sources = (await Promise.all(unique.map((hit) => fetchReadable(hit, question)))).filter(Boolean) as SourceRecord[];
-  if (!sources.length) throw new Error("Live providers returned no readable public sources. No answer was generated.");
+  const fetchFailures: string[] = [];
+  const sources = (await Promise.all(unique.map((hit) => fetchReadable(hit, question, fetchFailures)))).filter(Boolean) as SourceRecord[];
+  if (fetchFailures.length) onProgress({ stage: "fetch-warning", detail: `${fetchFailures.length}/${unique.length} pages were not readable (${summarizeFetchFailures(fetchFailures)})`, at: Date.now() });
+  if (!sources.length) throw new Error(`Live providers returned no readable public sources (${summarizeFetchFailures(fetchFailures) || "no failures recorded"}). No answer was generated.`);
   onProgress({ stage: "ranking", detail: "Ranking passages with real BM25 lexical retrieval, free local semantic embeddings, and reciprocal-rank fusion", at: Date.now() });
   let evidence = extractEvidence(question, sources);
   const denseScores = await denseRank(question, evidence.map((e) => e.quote));
@@ -303,9 +363,9 @@ export async function conductResearch(question: string, onProgress: (p: Research
   const context = evidence.map((e, i) => `[${i + 1}] ${e.quote} (Source: ${e.title} — ${e.url})`).join("\n");
   const attachmentBlock = userAttachments?.contextText ? `\n\nUSER-PROVIDED DOCUMENT (context the question is about; NOT web evidence — never cite it with [n]):\n${userAttachments.contextText.slice(0, 60000)}` : "";
   const imageParts = (userAttachments?.imageUrls || []).map((url) => ({ type: "image_url" as const, image_url: { url } }));
-  const instruction = `Question: ${question}${attachmentBlock}\n\nVerified evidence:\n${context}\n\nWrite a concise answer with headings: Key findings, Evidence and limitations, Conflicting evidence, Conclusion. Cite the supplied evidence inline.${imageParts.length ? " The user attached image(s) as visual context; describe what is relevant to the question and clearly separate what comes from the images versus the cited web evidence." : ""}`;
+  const instruction = `Question: ${question}${attachmentBlock}\n\nVerified evidence:\n${context}\n\nWrite a research answer with exactly these sections, in this order:\n\n## Direct answer\n2-4 sentences that directly answer the question, with inline [n] citations.\n\n## Why it happens — analysis\nExplain the underlying causes, mechanisms, and context behind the answer, the way a knowledgeable person would explain it to a curious reader: what drives the phenomenon, how the pieces connect, and what it means in practice. Reason across the evidence instead of only restating quotes. Every factual statement from web research must cite [n].\n\n## Evidence and sources\nThe strongest retrieved evidence that supports the analysis, cited inline.\n\n## Conflicting evidence\nOnly if the retrieved sources disagree or the evidence is mixed; otherwise state that retrieved sources are consistent.\n\n## Limitations\nWhat the retrieved evidence cannot answer, and how current or complete it is.\n\n## Conclusion\n2-3 closing sentences with citations.\n\n## Suggested follow-up questions\nExactly three questions a reader would naturally ask next, one per line, each on its own as a list item.${imageParts.length ? " The user attached image(s) as visual context; describe what is relevant to the question and clearly separate what comes from the images versus the cited web evidence." : ""}`;
   const userMessageContent: any = imageParts.length ? [{ type: "text", text: instruction }, ...imageParts] : instruction;
-  const response = await invokeLLM({ messages: [{ role: "system", content: "You write cautious research answers. Use only the supplied evidence and any user-provided attachments. Every factual sentence from web research must cite [n]. If evidence conflicts, explicitly say evidence is mixed. Never invent URLs, sources, experiments, or facts. Do not reveal private reasoning." }, { role: "user", content: userMessageContent }] });
+  const response = await callSynthesisLLM({ messages: [{ role: "system", content: "You are a research analyst. You write answers that research like a search engine (every fact traced to a retrieved source) and explain like a teacher: direct, then causal — what happens, why it happens, and what it means. Use only the supplied evidence and any user-provided attachments. Every factual sentence from web research must cite [n]. If evidence conflicts, explicitly say evidence is mixed. Say plainly when the retrieved evidence does not answer part of the question. Never invent URLs, sources, experiments, numbers, or facts. Do not reveal private reasoning." }, { role: "user", content: userMessageContent }] });
   const answer = typeof response.choices?.[0]?.message?.content === "string" ? response.choices[0].message.content : "The answer generator did not return usable content.";
   const citationAudit = auditCitationReferences(answer, evidence.length);
   if (citationAudit.invalidReferences.length) throw new Error(`Answer contained invalid citation reference(s): ${citationAudit.invalidReferences.join(", ")}`);

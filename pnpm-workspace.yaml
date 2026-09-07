@@ -1,0 +1,8 @@
+packages:
+  - .
+onlyBuiltDependencies:
+  - esbuild
+  - onnxruntime-node
+  - "@tailwindcss/oxide"
+  - sharp
+  - protobufjs

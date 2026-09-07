@@ -10,7 +10,23 @@ The default web adapter is the public Wikipedia API and the default academic ada
 
 ## Research boundary
 
-A session creates bounded query variants, calls live providers, canonicalizes and deduplicates URLs, fetches only public HTTP(S) pages, rejects private-network targets, extracts readable passages, scores source quality from observable signals, ranks evidence lexically, and asks the server-side LLM to synthesize only from the retrieved evidence. The interface exposes completed backend stages, source URLs, quality signals, and an evidence trail; it does not expose private chain-of-thought.
+A session creates bounded query variants, calls live providers, canonicalizes and deduplicates URLs, fetches only public HTTP(S) pages, rejects private-network targets, extracts readable passages, scores source quality from observable signals, ranks evidence lexically, and asks the server-side LLM to synthesize only from the retrieved evidence. Pages that cannot be fetched are reported with per-reason counts (blocked, unsupported content type, no readable text, timed out) instead of failing silently. The interface exposes completed backend stages, source URLs, quality signals, and an evidence trail; it does not expose private chain-of-thought.
+
+## Explanatory synthesis (research first, then causes)
+
+Answers are written in a fixed structure — Direct answer, Why it happens (causal analysis), Evidence and sources, Conflicting evidence, Limitations, Conclusion, Suggested follow-up questions — so a question is not answered with a bare list of sources. The synthesis model is instructed to explain the mechanisms and causes behind the answer in plain language, reasoning across the retrieved evidence, while every factual sentence still cites the retrieved passages. The citation audit rejects any answer whose `[n]` references do not exist in the retrieved evidence.
+
+## Answer model
+
+The synthesis model is not trained in this repository and never runs inside the web runtime. By default the managed built-in LLM is used. For a stronger explanatory model, any OpenAI-compatible chat-completions endpoint can be configured, including Hugging Face Inference Providers:
+
+```text
+LLM_BASE_URL=https://router.huggingface.co/v1
+LLM_API_KEY=<hugging face token>
+LLM_MODEL=meta-models/Muse-Glimmer-30B
+```
+
+`HF_API_KEY` + `HF_MODEL` are accepted as aliases that imply the Hugging Face router. Incomplete configuration falls back to the managed LLM; if no model is configured at all, synthesis fails explicitly rather than substituting generated content. This repository makes no claim of having trained or fine-tuned the configured model.
 
 ## Training and evaluation
 
