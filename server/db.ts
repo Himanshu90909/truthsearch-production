@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { InsertUser, users, researchSessions, researchMessages, researchQueries, researchSources, researchPassages, researchClaims, researchEvidence, researchCitations } from "../drizzle/schema";
 import { ENV } from "./_core/env";
@@ -19,4 +19,27 @@ export async function addPassage(sourceId: number, passageIndex: number, text: s
 export async function addClaim(sessionId: number, claim: string, confidence: number, status: "verified" | "mixed" | "unsupported") { const db = await getDb(); if (!db) return 0; const result = await db.insert(researchClaims).values({ sessionId, claim, confidence, verificationStatus: status }); return Number(result[0].insertId); }
 export async function addEvidence(claimId: number, passageId: number, quote: string, supportScore: number) { const db = await getDb(); if (!db) return; await db.insert(researchEvidence).values({ claimId, passageId, exactQuote: quote, supportScore }); }
 export async function addCitation(claimId: number, sourceId: number, verified: boolean) { const db = await getDb(); if (!db) return; await db.insert(researchCitations).values({ claimId, sourceId, verified: verified ? 1 : 0 }); }
-export async function getSession(id: number, userId?: number) { const db = await getDb(); if (!db) return undefined; const where = userId ? and(eq(researchSessions.id, id), eq(researchSessions.userId, userId)) : eq(researchSessions.id, id); const session = (await db.select().from(researchSessions).where(where).limit(1))[0]; if (!session) return undefined; const [messages, queries, sources, claims, evidence] = await Promise.all([db.select().from(researchMessages).where(eq(researchMessages.sessionId, id)).orderBy(researchMessages.createdAt), db.select().from(researchQueries).where(eq(researchQueries.sessionId, id)).orderBy(researchQueries.createdAt), db.select().from(researchSources).where(eq(researchSources.sessionId, id)).orderBy(desc(researchSources.qualityScore)), db.select().from(researchClaims).where(eq(researchClaims.sessionId, id)), db.select().from(researchEvidence).where(eq(researchEvidence.claimId, id))]); return { session, messages, queries, sources, claims, evidence }; }
+export async function listSessions(userId?: number, limit = 30) {
+  const db = await getDb();
+  if (!db) return [];
+  const where = userId ? eq(researchSessions.userId, userId) : undefined;
+  return db.select({ id: researchSessions.id, title: researchSessions.title, question: researchSessions.question, status: researchSessions.status, createdAt: researchSessions.createdAt, updatedAt: researchSessions.updatedAt }).from(researchSessions).where(where).orderBy(desc(researchSessions.updatedAt)).limit(Math.min(Math.max(limit, 1), 100));
+}
+
+export async function getSession(id: number, userId?: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const where = userId ? and(eq(researchSessions.id, id), eq(researchSessions.userId, userId)) : eq(researchSessions.id, id);
+  const session = (await db.select().from(researchSessions).where(where).limit(1))[0];
+  if (!session) return undefined;
+  const [messages, queries, sources, claims] = await Promise.all([
+    db.select().from(researchMessages).where(eq(researchMessages.sessionId, id)).orderBy(researchMessages.createdAt),
+    db.select().from(researchQueries).where(eq(researchQueries.sessionId, id)).orderBy(researchQueries.createdAt),
+    db.select().from(researchSources).where(eq(researchSources.sessionId, id)).orderBy(desc(researchSources.qualityScore)),
+    db.select().from(researchClaims).where(eq(researchClaims.sessionId, id)),
+  ]);
+  const evidence = claims.length
+    ? await db.select().from(researchEvidence).where(inArray(researchEvidence.claimId, claims.map((claim) => claim.id)))
+    : [];
+  return { session, messages, queries, sources, claims, evidence };
+}

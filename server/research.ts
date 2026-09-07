@@ -169,10 +169,22 @@ export function verifyEvidence(evidence: EvidenceRecord[], sources: SourceRecord
 }
 
 export function detectContradictions(evidence: EvidenceRecord[]) {
-  const positive = evidence.filter((e) => /improv|reduc|increase|effective|benefit|better/i.test(e.quote));
-  const negative = evidence.filter((e) => /no significant|not improve|ineffective|limitation|failure|worse/i.test(e.quote));
+  const positive = evidence.filter((e) => /\b(improv|reduc|increase|effective|benefit|better|significant positive)\w*/i.test(e.quote) && !/\b(no|not|never|without)\s+(?:significant\s+)?(?:improv|benefit|effect)/i.test(e.quote));
+  const negative = evidence.filter((e) => /\b(no significant|not improve|ineffective|limitation|failure|worse|insufficient|uncertain|mixed evidence)\b/i.test(e.quote));
   if (!positive.length || !negative.length) return [];
   return [{ description: "Retrieved sources contain both supportive and limiting language. Evidence is mixed and should be interpreted in context.", supporting: positive.slice(0, 2), contradicting: negative.slice(0, 2) }];
+}
+
+export function auditCitationReferences(answer: string, evidenceCount: number) {
+  const references = Array.from(answer.matchAll(/\[(\d+)\]/g)).map((match) => Number(match[1]));
+  const invalid = references.filter((reference) => reference < 1 || reference > evidenceCount);
+  const factualLines = answer.split(/\n+/).map((line) => line.trim()).filter((line) => line && !line.startsWith("#") && !/^[-*]\s*$/.test(line));
+  const citedLines = factualLines.filter((line) => /\[\d+\]/.test(line));
+  return {
+    references: Array.from(new Set(references)),
+    invalidReferences: Array.from(new Set(invalid)),
+    citationCoverage: factualLines.length ? citedLines.length / factualLines.length : 0,
+  };
 }
 
 function extractEvidence(question: string, sources: SourceRecord[]): EvidenceRecord[] {
@@ -221,6 +233,8 @@ export async function conductResearch(question: string, onProgress: (p: Research
   const userMessageContent: any = imageParts.length ? [{ type: "text", text: instruction }, ...imageParts] : instruction;
   const response = await invokeLLM({ messages: [{ role: "system", content: "You write cautious research answers. Use only the supplied evidence and any user-provided attachments. Every factual sentence from web research must cite [n]. If evidence conflicts, explicitly say evidence is mixed. Never invent URLs, sources, experiments, or facts. Do not reveal private reasoning." }, { role: "user", content: userMessageContent }] });
   const answer = typeof response.choices?.[0]?.message?.content === "string" ? response.choices[0].message.content : "The answer generator did not return usable content.";
+  const citationAudit = auditCitationReferences(answer, evidence.length);
+  if (citationAudit.invalidReferences.length) throw new Error(`Answer contained invalid citation reference(s): ${citationAudit.invalidReferences.join(", ")}`);
   onProgress({ stage: "completed", detail: "Citations verified against retrieved URLs", at: Date.now() });
-  return { answer, plan: { question, queries, providers: Array.from(new Set(planned.map((x) => x.provider))), bounded: true, evidence, conflicts }, sources, evidence, conflicts, progress: [] as ResearchProgress[] };
+  return { answer, plan: { question, queries, providers: Array.from(new Set(planned.map((x) => x.provider))), bounded: true, evidence, conflicts, citationAudit }, sources, evidence, conflicts, citationAudit, progress: [] as ResearchProgress[] };
 }
