@@ -30,12 +30,6 @@ const MODEL_CHAIN: Record<string, string[]> = {
 
 const TECHNICAL_PATTERN = /\b(code|coding|python|javascript|typescript|java|c\+\+|rust|golang|sql|api|function|class|algorithm|binary search|data structure|regex|bug|error|debug|compile|framework|library|docker|git|css|html|node\.?js|react)\b/i;
 
-function env(key: string): string | undefined {
-  return (globalThis as Record<string, unknown>)[`Deno`]
-    ? undefined
-    : undefined;
-}
-
 function apiKey(): string {
   // Secrets live in the app environment (HF_API_KEY), never in code.
   return (Deno.env.get("HF_API_KEY") as string) || "";
@@ -364,7 +358,9 @@ Deno.serve(async (req) => {
         headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
       });
     }
-    const imageUrls = (body.imageUrls || []).filter((u) => /^https?:\/\//.test(u)).slice(0, 4);
+    const imageUrls = (body.imageUrls || [])
+      .filter((u) => (/^https?:\/\//.test(u) || /^data:image\/(jpeg|png|webp|gif);base64,/.test(u)) && u.length <= 7_500_000)
+      .slice(0, 4);
     const contextText = (body.contextText || "").slice(0, 30000);
 
     // 1. Plan queries (like the backend: base + evidence facets).

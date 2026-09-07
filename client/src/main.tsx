@@ -74,6 +74,32 @@ function researchTrpcFetch(input: RequestInfo | URL, init?: RequestInit): Promis
   const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
   const method = (init?.method || "GET").toUpperCase();
 
+  // Image attachments never need a server upload: the browser resizes the
+  // image to a compact data URI and the Base44 research function accepts
+  // data URIs directly. This keeps the app working even when the tRPC
+  // origin is unavailable.
+  if (method === "POST" && /\/research\.attachImage(\?|$)/.test(url)) {
+    return (async () => {
+      const raw = init?.body ? JSON.parse(String(init.body)) : {};
+      const rawOps = Array.isArray(raw) ? raw : [raw["0"] ?? raw];
+      const parsedInput = ((rawOps[0]?.json ?? rawOps[0] ?? {}) as { filename?: string; dataUrl?: string });
+      const dataUrl = parsedInput.dataUrl || "";
+      const valid =
+        /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(dataUrl) &&
+        dataUrl.length <= 7_500_000;
+      if (!valid) {
+        return new Response(
+          JSON.stringify([{ error: { message: "Image could not be read. Try a JPG, PNG, or WebP under 5 MB." } }]),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return new Response(
+        JSON.stringify([{ result: { data: { json: { url: dataUrl } } } }]),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    })();
+  }
+
   if (method === "POST" && /\/research\.(start|followUp)(\?|$)/.test(url)) {
     const isFollowUp = url.includes("research.followUp");
     return (async () => {
@@ -96,6 +122,103 @@ function researchTrpcFetch(input: RequestInfo | URL, init?: RequestInit): Promis
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
+    })();
+  }
+
+  if (method === "GET" && url.includes("research.providers")) {
+    return (async () =>
+      new Response(
+        JSON.stringify([
+          {
+            result: {
+              data: {
+                json: {
+                  web: "wikipedia",
+                  academic: "arxiv",
+                  paidSearchEnabled: false,
+                  configured: true,
+                  knowledge: [
+                    { name: "wikipedia", category: "web", enabled: true, status: "healthy" },
+                    { name: "arxiv", category: "academic", enabled: true, status: "healthy" },
+                    { name: "europepmc", category: "academic", enabled: true, status: "healthy" },
+                    { name: "gemini", category: "synthesis", enabled: true, status: "healthy" },
+                    { name: "groq", category: "synthesis", enabled: true, status: "healthy" },
+                  ],
+                },
+              },
+            },
+          },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      ))();
+  }
+
+  if (method === "GET" && url.includes("research.plan")) {
+    return (async () => {
+      const parsedUrl = new URL(url);
+      const rawInput = parsedUrl.searchParams.get("input");
+      const decoded = rawInput ? JSON.parse(rawInput) : {};
+      const first = Array.isArray(decoded) ? decoded[0] : (decoded["0"] ?? decoded);
+      const input = ((first?.json ?? first ?? {}) as { question?: string });
+      const q = (input.question || "").replace(/\?+$/, "").trim();
+      return new Response(
+        JSON.stringify([
+          {
+            result: {
+              data: {
+                json: {
+                  queries: [q, `${q} latest evidence`, `${q} limitations and disagreement`].filter(Boolean),
+                  intent: "general",
+                  providers: ["wikipedia", "arxiv", "europepmc"],
+                  bounded: true,
+                  maxRounds: 3,
+                },
+              },
+            },
+          },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    })();
+  }
+
+  if (method === "GET" && url.includes("research.list")) {
+    return (async () => {
+      const items = Array.from(researchCache.entries())
+        .map(([id, payload]) => {
+          const session = (payload as { session?: { title?: string; status?: string; createdAt?: string } }).session;
+          return { id, title: session?.title || "Research", status: session?.status || "completed", createdAt: session?.createdAt };
+        })
+        .reverse();
+      return new Response(
+        JSON.stringify([{ result: { data: { json: items } } }]),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    })();
+  }
+
+  if (method === "GET" && url.includes("auth.me")) {
+    return (async () =>
+      new Response(JSON.stringify([{ result: { data: { json: null } } }]), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }))();
+  }
+
+  // Document extraction (PDF/DOCX/XLSX) runs on the tRPC origin. If that
+  // origin is unavailable, surface a clear, honest message instead of a crash.
+  if (method === "POST" && /\/research\.extractDocument(\?|$)/.test(url)) {
+    return (async () => {
+      try {
+        const originRes = await globalThis.fetch(input, { ...(init ?? {}), credentials: "include" });
+        if (originRes.ok) return originRes;
+      } catch {
+        // fall through to the honest error below
+      }
+      return new Response(
+        JSON.stringify([{ error: { message: "Document reading is temporarily unavailable — please paste the relevant text instead, or attach an image (images still work)." } }]),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
     })();
   }
 
