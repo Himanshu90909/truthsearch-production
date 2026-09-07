@@ -2,7 +2,7 @@
 
 ## TruthSearch
 
-**HB Innovators by Himanshu Suthar** is the creator attribution for this TruthSearch research workspace. TruthSearch is a research workspace for asking arbitrary questions and inspecting the path from live retrieval to cited synthesis. It does not ship a demo answer bank and it does not silently substitute generated content when a provider fails.
+**HB Innovators by Himanshu Suthar** is the creator attribution for this TruthSearch research workspace. TruthSearch is a research workspace for asking arbitrary questions and inspecting the path from live retrieval to cited synthesis. It does not ship a demo answer bank and it does not present model-knowledge answers as sourced research — answers that fall back to the model are labeled as such.
 
 ## No-card operating mode
 
@@ -21,6 +21,10 @@ Answers are written in a fixed structure — Direct answer, Why it happens (caus
 The synthesis backend is a single fixed model, the way Perplexity runs one pipeline: `meta-models/Muse-Glimmer-30B`, an image-text-to-text model served through Hugging Face Inference Providers and called via `https://router.huggingface.co/v1/chat/completions`. The model is not trained, fine-tuned, or hosted in this repository; it is called as a remote service. The only required secret is `HF_API_KEY`. If it is missing, synthesis fails explicitly rather than substituting generated content.
 
 User-attached images are passed to the model as vision input: a user can attach an image and ask about it, and the model answers from what it sees, while any web-research facts still come only from the retrieved, cited evidence.
+
+## Always answering, honestly labeled
+
+Every question gets an answer. When live research cannot answer the question — no readable sources, no verifiable passages, or a technical/programming question the web results do not address — the model answers from its own knowledge instead of failing, and the answer is labeled for what it is: sentences from the model carry an inline 'model knowledge' mark, and a knowledge-only answer opens with an explicit notice that nothing is web-cited. Answers grounded in retrieved evidence keep their [n] citations. The citation audit still rejects any invalid reference, and a missing HF_API_KEY still fails explicitly rather than fabricating.
 
 Training and evaluation
 

@@ -83,6 +83,15 @@ describe("knowledge provider registry", () => {
   });
 });
 
+describe("intent classification for direct technical answers", () => {
+  it("routes code/programming questions to the technical intent so the model answers from expertise", async () => {
+    const { classifyIntent } = await import("./research");
+    expect(classifyIntent("how do I fix a TypeError in my python code")).toBe("programming");
+    expect(classifyIntent("write a function to reverse a linked list in javascript")).toBe("programming");
+    expect(classifyIntent("why do LLMs hallucinate?")).toBe("general_research");
+  });
+});
+
 describe("single synthesis backend", () => {
   it("fails explicitly when the HF_API_KEY secret is missing instead of fabricating an answer", async () => {
     const before = { ...process.env };
