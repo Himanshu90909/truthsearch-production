@@ -18,30 +18,17 @@ Answers are written in a fixed structure — Direct answer, Why it happens (caus
 
 ## Answer models
 
-The backend routes each question to the best trending open model served on Hugging Face Inference Providers — internally, like Perplexity, with no model picker in the UI:
+The production backend is the Base44 serverless function included in this repository at `server/base44/truthsearchResearch.ts` and deployed at `https://solene-7c76de54.base44.app/functions/truthsearchResearch`. It runs the full research pipeline — query planning, live multi-source search (Wikipedia, arXiv, Europe PMC), evidence ranking, and causal synthesis — and the Vercel frontend calls it directly.
 
-- **General research answers:** `zai-org/GLM-5.3`, falling back to `deepseek-ai/DeepSeek-V4-Flash-0731`
-- **Technical and code questions:** `deepseek-ai/DeepSeek-V4-Flash-0731`, falling back to `zai-org/GLM-5.3`
-- **Image questions:** `zai-org/GLM-5.3-Flash` (image-text-to-text), falling back to `meta-models/Muse-Glimmer-30B`
+Synthesis runs through a three-provider free-tier chain with automatic failover, internally (like Perplexity, with no model picker in the UI):
 
-All calls go through the OpenAI-compatible Hugging Face router (`https://router.huggingface.co/v1/chat/completions`); the only required secret is `HF_API_KEY`. Models are never trained or hosted here — they are called as remote services. If every model in a route fails, synthesis fails explicitly with the per-model reasons; nothing is fabricated. Attached images are passed as vision input, so a user can upload an image and ask about it.
+1. **Google Gemini 2.5 Flash** (primary; `GEMINI_API_KEY`, free tier ~1,500 requests/day, includes vision for image questions)
+2. **Groq GPT-OSS-120b, then Qwen3.8-27b** (fallback; `GROK_API_KEY`, free daily-reset limits, sub-second latency)
+3. **Hugging Face Inference Providers router** (last resort; `HF_API_KEY`, used while monthly included credits remain)
 
-Always answering, honestly labeled
+If every provider fails, synthesis fails explicitly with the per-provider reasons; nothing is fabricated. Attached images are fetched, base64-inlined, and passed to the vision-capable primary as inline image parts, so a user can upload an image and ask about it. Models are never trained or hosted here — they are called as remote services.
 
-Every question gets an answer. When live research cannot answer the question — no readable sources, no verifiable passages, or a technical/programming question the web results do not address — the model answers from its own knowledge instead of failing, and the answer is labeled for what it is: sentences from the model carry an inline 'model knowledge' mark, and a knowledge-only answer opens with an explicit notice that nothing is web-cited. Answers grounded in retrieved evidence keep their [n] citations. The citation audit still rejects any invalid reference, and a missing HF_API_KEY still fails explicitly rather than fabricating.
-
-Training and evaluation
-
-The web runtime is deliberately not a GPU training environment. The scripts under `training/` are real entry points for licensed Hugging Face-compatible datasets and will detect CPU versus CUDA, stream rows, cap examples, checkpoint models, and record the actual configuration. They fail clearly when the optional ML dependencies are missing. They never write invented metrics. Use a suitable GPU machine for large runs:
-
-```bash
-pip install torch datasets sentence-transformers
-python training/retriever/train.py --dataset <licensed-dataset> --max-examples 1000000 --output artifacts/retriever
-python training/reranker/train.py --dataset <licensed-labelled-dataset> --max-examples 1000000 --output artifacts/reranker
-python evaluation/run.py --dataset <licensed-eval-dataset> --model-version <checkpoint> --output artifacts/evaluation/report.json
-```
-
-The current production request path uses a deterministic lexical ranking core and records the intended dense/reranker extension points. It must not claim that a custom retriever or reranker has been trained until an external run produces checkpoints and measured evaluation artifacts.
+The frontend server (`server/research.ts`) keeps the same no-card research boundary: bounded query variants, live providers, canonicalization and deduplication, readable-passage extraction, quality scoring, and explicit per-reason failure counts instead of silent fallbacks.
 
 ## Local development
 
