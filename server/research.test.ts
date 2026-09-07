@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bm25Like, canonicalizeUrl, classifyIntent, classifySource, detectContradictions, makeQueries, rankEvidence, reciprocalRankFusion, scoreSource, verifyEvidence } from "./research";
+import { bm25Like, canonicalizeUrl, classifyIntent, classifySource, detectContradictions, makeQueries, queryContentRelevance, rankEvidence, reciprocalRankFusion, scoreSource, verifyEvidence } from "./research";
 
 describe("research primitives", () => {
   it("canonicalizes tracking parameters and fragments", () => {
@@ -15,6 +15,22 @@ describe("research primitives", () => {
     const web = { title: "Page", url: "https://example.com", snippet: "", provider: "wikipedia" as const };
     expect(scoreSource(academic, "doi.org")).toBeGreaterThan(scoreSource(web, "example.com"));
     expect(classifySource("doi.org", "semanticScholar")).toBe("Academic Paper");
+  });
+  it("boosts source score when the fetched content is actually relevant to the query", () => {
+    const hit = { title: "t", url: "https://example.com", snippet: "", provider: "wikipedia" as const };
+    expect(scoreSource(hit, "example.com", 5)).toBeGreaterThan(scoreSource(hit, "example.com", 0));
+  });
+  it("scores query-relevant content higher than off-topic content, catching morphological variants", () => {
+    const relevant = queryContentRelevance(
+      "Why do LLMs hallucinate?",
+      "Large language models (LLMs) sometimes hallucinate facts because they predict the most likely next token rather than verifying truth."
+    );
+    const irrelevant = queryContentRelevance(
+      "Why do LLMs hallucinate?",
+      "Witch's milk is a fluid that can be secreted from the breast tissue of newborn human infants of either sex."
+    );
+    expect(relevant).toBeGreaterThan(irrelevant);
+    expect(irrelevant).toBeLessThan(2);
   });
   it("uses fused ordering in the production evidence ranking function", () => {
     const items = [
@@ -37,8 +53,10 @@ describe("research primitives", () => {
     expect(result).toHaveLength(1);
     expect(result[0]?.description).toContain("mixed");
   });
-  it("produces lexical scores and reciprocal rank fusion values", () => {
-    expect(bm25Like("retrieval evidence", ["retrieval improves evidence", "unrelated text"])).toEqual([2, 0]);
+  it("produces real BM25 lexical scores (rare/matching terms rank above unrelated text) and reciprocal rank fusion values", () => {
+    const [relevantScore, unrelatedScore] = bm25Like("retrieval evidence", ["retrieval improves evidence quality for search systems", "totally unrelated text about gardening tools"]);
+    expect(relevantScore).toBeGreaterThan(unrelatedScore);
+    expect(unrelatedScore).toBe(0);
     expect(reciprocalRankFusion([[0, 1], [0, 2]])[0]).toBeGreaterThan(reciprocalRankFusion([[0, 1], [0, 2]])[1]);
   });
 });

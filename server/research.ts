@@ -5,7 +5,7 @@ import { providerRegistry, providersForIntent } from "./providers/registry";
 export type ProviderName = "brave" | "tavily" | "semanticScholar" | "crossref" | "openalex" | "europePmc" | "wikipedia" | "arxiv" | "github" | "stackExchange" | "openLibrary" | "wikidata" | "worldBank" | "dataGov";
 export type ResearchProgress = { stage: string; detail: string; at: number };
 export type SearchHit = { title: string; url: string; snippet: string; published?: string; author?: string; provider: ProviderName };
-export type SourceRecord = SearchHit & { canonicalUrl: string; domain: string; sourceType: string; qualityScore: number; content: string; passages: string[] };
+export type SourceRecord = SearchHit & { canonicalUrl: string; domain: string; sourceType: string; qualityScore: number; content: string; passages: string[]; relevance?: number };
 export type EvidenceRecord = { claim: string; quote: string; url: string; title: string; supportScore: number; qualityScore: number; sourceId: number };
 
 const env = (key: string) => process.env[key]?.trim();
@@ -99,16 +99,61 @@ export function classifySource(domain: string, provider: ProviderName): string {
   return "Web Source";
 }
 
-export function scoreSource(hit: SearchHit, domain: string): number {
-  let score = 45;
-  if (hit.provider === "semanticScholar" || hit.provider === "crossref" || hit.provider === "arxiv") score += 28;
-  if (/\.gov$|\.edu$|docs\.|developer\./.test(domain)) score += 18;
-  if (hit.author) score += 4;
-  if (hit.published) score += 3;
-  return Math.min(score, 98);
+// Stopwords excluded when measuring how much of the question's meaningful vocabulary
+// a fetched page actually contains. Kept intentionally small and domain-agnostic.
+const STOPWORDS = new Set([
+  "the", "a", "an", "is", "are", "was", "were", "do", "does", "did", "in", "on", "at", "of",
+  "to", "for", "and", "or", "but", "how", "why", "what", "when", "where", "who", "which",
+  "this", "that", "these", "those", "with", "from", "by", "as", "be", "it", "its", "can",
+  "could", "should", "would", "will", "shall", "not", "no", "there", "their", "than",
+]);
+
+// Crude suffix-stripping so "hallucinate" still matches "hallucination"/"hallucinations" in
+// page text without pulling in a full stemming library. Only applied to longer words, where
+// morphological variation is common; short words are matched exactly.
+function stem(term: string): string {
+  if (term.length < 6) return term;
+  return term.slice(0, Math.max(4, Math.round(term.length * 0.75)));
 }
 
-async function fetchReadable(hit: SearchHit): Promise<SourceRecord | null> {
+// Real query-to-document relevance signal (0-5), used both to filter out off-topic fetched
+// pages entirely and to drive scoreSource. Without this, every result from a given provider
+// received an identical flat score regardless of whether it actually discussed the question.
+// Wikipedia (and similar wikis) tag suspected-AI-written articles with cleanup banners whose
+// own text literally contains words like "LLMs" and "hallucinated" (e.g. "vocab distribution
+// typical of 2023-24 LLMs", "may include hallucinated information or fictitious references").
+// That boilerplate has nothing to do with the article's topic but will false-positive-match any
+// question about AI/LLMs under naive keyword matching, so it's stripped before scoring content.
+const BOILERPLATE_PATTERNS = [
+  /this article may (?:have been generated|include text generated)[^.]*\./gi,
+  /vocab distribution typical of [^)]*\)/gi,
+  /learn how and when to remove this message\)?/gi,
+  /may include hallucinated information[^.]*\./gi,
+  /WP:AISIGNS/gi,
+];
+
+function stripBoilerplate(content: string): string {
+  return BOILERPLATE_PATTERNS.reduce((acc, pattern) => acc.replace(pattern, " "), content);
+}
+
+export function queryContentRelevance(query: string, content: string): number {
+  const terms = Array.from(new Set(query.toLowerCase().split(/\W+/).filter((t) => t.length > 2 && !STOPWORDS.has(t))));
+  if (!terms.length) return 2.5;
+  const lower = stripBoilerplate(content).toLowerCase();
+  const matched = terms.filter((term) => lower.includes(stem(term))).length;
+  return (matched / terms.length) * 5;
+}
+
+export function scoreSource(hit: SearchHit, domain: string, relevance = 0): number {
+  let score = 30 + Math.round(Math.min(relevance, 5) * 6);
+  if (hit.provider === "semanticScholar" || hit.provider === "crossref" || hit.provider === "arxiv" || hit.provider === "openalex" || hit.provider === "europePmc") score += 20;
+  if (/\.gov$|\.edu$|docs\.|developer\./.test(domain)) score += 14;
+  if (hit.author) score += 3;
+  if (hit.published) score += 2;
+  return Math.max(5, Math.min(score, 98));
+}
+
+async function fetchReadable(hit: SearchHit, question: string): Promise<SourceRecord | null> {
   try {
     assertSafeUrl(hit.url);
     const canonicalUrl = canonicalizeUrl(hit.url);
@@ -121,7 +166,8 @@ async function fetchReadable(hit: SearchHit): Promise<SourceRecord | null> {
     if (content.length < 80) return null;
     const u = new URL(canonicalUrl);
     const passages = content.match(/.{1,900}(?:[.!?]|$)/g)?.map((x) => x.trim()).filter((x) => x.length > 100).slice(0, 30) || [content.slice(0, 900)];
-    return { ...hit, canonicalUrl, domain: u.hostname, sourceType: classifySource(u.hostname, hit.provider), qualityScore: scoreSource(hit, u.hostname), content, passages };
+    const relevance = queryContentRelevance(question, `${hit.title} ${hit.snippet} ${content}`);
+    return { ...hit, canonicalUrl, domain: u.hostname, sourceType: classifySource(u.hostname, hit.provider), qualityScore: scoreSource(hit, u.hostname, relevance), content, passages, relevance };
   } catch { return null; }
 }
 
@@ -144,9 +190,33 @@ export function makeQueries(question: string, academic = false): string[] {
   return Array.from(new Set(queries)).slice(0, maxQueries);
 }
 
+// Real BM25 (Okapi) instead of a flat "does this term appear at all" count. IDF is computed
+// over the passage set itself so rare/distinctive query terms carry more weight than common
+// ones, and term-frequency saturation + document-length normalization keep long passages from
+// automatically outranking short, precise ones.
 export function bm25Like(query: string, passages: string[]): number[] {
-  const terms = query.toLowerCase().split(/\W+/).filter(Boolean);
-  return passages.map((p) => terms.reduce((n, t) => n + (p.toLowerCase().includes(t) ? 1 : 0), 0));
+  const k1 = 1.5;
+  const b = 0.75;
+  const tokenize = (s: string) => s.toLowerCase().split(/\W+/).filter(Boolean);
+  const queryTerms = Array.from(new Set(tokenize(query)));
+  const docs = passages.map(tokenize);
+  const docLens = docs.map((d) => d.length || 1);
+  const avgLen = docLens.reduce((sum, len) => sum + len, 0) / (docLens.length || 1);
+  const docCount = docs.length || 1;
+  const idf = new Map<string, number>();
+  queryTerms.forEach((term) => {
+    const docsWithTerm = docs.filter((d) => d.includes(term)).length;
+    idf.set(term, Math.log(1 + (docCount - docsWithTerm + 0.5) / (docsWithTerm + 0.5)));
+  });
+  return docs.map((doc, i) =>
+    queryTerms.reduce((score, term) => {
+      const termFreq = doc.filter((word) => word === term).length;
+      if (!termFreq) return score;
+      const numerator = termFreq * (k1 + 1);
+      const denominator = termFreq + k1 * (1 - b + (b * docLens[i]) / (avgLen || 1));
+      return score + (idf.get(term) || 0) * (numerator / denominator);
+    }, 0)
+  );
 }
 
 export function reciprocalRankFusion(rankings: number[][]): number[] {
@@ -207,7 +277,11 @@ export async function conductResearch(question: string, onProgress: (p: Research
   const queries = makeQueries(question, true);
   onProgress({ stage: "searching", detail: `Running ${queries.length} live searches across ${primary}, ${academic}, and ${extraProviders.join(", ")}`, at: Date.now() });
   const freeAcademic = [academic, "openalex", "europePmc", "crossref"] as ProviderName[];
-  const planned = queries.map((q, i) => ({ q, provider: i < 2 ? primary : i < 6 ? freeAcademic[(i - 2) % freeAcademic.length] : extraProviders[(i - 6) % Math.max(extraProviders.length, 1)] || "wikidata" }));
+  // Only the bare/raw question (queries[0], no generic filler appended) goes to the general-web
+  // primary provider — Wikipedia's fuzzy full-text search treats extra filler words as additional
+  // OR-matched terms and drifts toward unrelated pages that happen to contain them. Filler-suffixed
+  // variants are routed to academic providers instead, where that phrasing is actually meaningful.
+  const planned = queries.map((q, i) => ({ q, provider: i === 0 ? primary : i < 6 ? freeAcademic[(i - 1) % freeAcademic.length] : extraProviders[(i - 6) % Math.max(extraProviders.length, 1)] || "wikidata" }));
   const settled = await Promise.allSettled(planned.map(({ q, provider }) => searchProvider(provider, q)));
   const failures = settled.filter((x): x is PromiseRejectedResult => x.status === "rejected").map((x) => x.reason instanceof Error ? x.reason.message : "Provider failed");
   if (failures.length) onProgress({ stage: "provider-warning", detail: `${failures.length} provider request(s) unavailable; continuing only with completed live results`, at: Date.now() });
@@ -215,9 +289,9 @@ export async function conductResearch(question: string, onProgress: (p: Research
   if (!hits.length) throw new Error(`All required live providers were unavailable. ${failures.join("; ")}`);
   const unique = Array.from(new Map(hits.filter((x) => x.url).map((x) => { try { return [canonicalizeUrl(x.url), x] as const; } catch { return [x.url, x] as const; } })).values()).slice(0, maxSources);
   onProgress({ stage: "fetching", detail: `Fetched ${unique.length} unique live search results; normalizing permitted public pages`, at: Date.now() });
-  const sources = (await Promise.all(unique.map(fetchReadable))).filter(Boolean) as SourceRecord[];
+  const sources = (await Promise.all(unique.map((hit) => fetchReadable(hit, question)))).filter(Boolean) as SourceRecord[];
   if (!sources.length) throw new Error("Live providers returned no readable public sources. No answer was generated.");
-  onProgress({ stage: "ranking", detail: "Ranking passages with lexical retrieval and reciprocal-rank fusion", at: Date.now() });
+  onProgress({ stage: "ranking", detail: "Ranking passages with real BM25 lexical retrieval, free local semantic embeddings, and reciprocal-rank fusion", at: Date.now() });
   let evidence = extractEvidence(question, sources);
   const denseScores = await denseRank(question, evidence.map((e) => e.quote));
   const rerankScores = await crossEncoderRank(question, evidence.map((e) => e.quote));
@@ -236,5 +310,7 @@ export async function conductResearch(question: string, onProgress: (p: Research
   const citationAudit = auditCitationReferences(answer, evidence.length);
   if (citationAudit.invalidReferences.length) throw new Error(`Answer contained invalid citation reference(s): ${citationAudit.invalidReferences.join(", ")}`);
   onProgress({ stage: "completed", detail: "Citations verified against retrieved URLs", at: Date.now() });
-  return { answer, plan: { question, queries, providers: Array.from(new Set(planned.map((x) => x.provider))), bounded: true, evidence, conflicts, citationAudit }, sources, evidence, conflicts, citationAudit, progress: [] as ResearchProgress[] };
+  const citedSourceIds = new Set(evidence.map((e) => e.sourceId));
+  const citedSources = sources.filter((_, sourceId) => citedSourceIds.has(sourceId));
+  return { answer, plan: { question, queries, providers: Array.from(new Set(planned.map((x) => x.provider))), bounded: true, evidence, conflicts, citationAudit }, sources: citedSources, evidence, conflicts, citationAudit, progress: [] as ResearchProgress[] };
 }
