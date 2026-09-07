@@ -18,17 +18,11 @@ Answers are written in a fixed structure — Direct answer, Why it happens (caus
 
 ## Answer model
 
-The synthesis model is not trained in this repository and never runs inside the web runtime. By default the managed built-in LLM is used. For a stronger explanatory model, any OpenAI-compatible chat-completions endpoint can be configured, including Hugging Face Inference Providers:
+The synthesis backend is a single fixed model, the way Perplexity runs one pipeline: `meta-models/Muse-Glimmer-30B`, an image-text-to-text model served through Hugging Face Inference Providers and called via `https://router.huggingface.co/v1/chat/completions`. The model is not trained, fine-tuned, or hosted in this repository; it is called as a remote service. The only required secret is `HF_API_KEY`. If it is missing, synthesis fails explicitly rather than substituting generated content.
 
-```text
-LLM_BASE_URL=https://router.huggingface.co/v1
-LLM_API_KEY=<hugging face token>
-LLM_MODEL=meta-models/Muse-Glimmer-30B
-```
+User-attached images are passed to the model as vision input: a user can attach an image and ask about it, and the model answers from what it sees, while any web-research facts still come only from the retrieved, cited evidence.
 
-`HF_API_KEY` + `HF_MODEL` are accepted as aliases that imply the Hugging Face router. Incomplete configuration falls back to the managed LLM; if no model is configured at all, synthesis fails explicitly rather than substituting generated content. This repository makes no claim of having trained or fine-tuned the configured model.
-
-## Training and evaluation
+Training and evaluation
 
 The web runtime is deliberately not a GPU training environment. The scripts under `training/` are real entry points for licensed Hugging Face-compatible datasets and will detect CPU versus CUDA, stream rows, cap examples, checkpoint models, and record the actual configuration. They fail clearly when the optional ML dependencies are missing. They never write invented metrics. Use a suitable GPU machine for large runs:
 

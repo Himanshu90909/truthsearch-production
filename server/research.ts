@@ -154,47 +154,33 @@ export function scoreSource(hit: SearchHit, domain: string, relevance = 0): numb
 }
 
 // ---------------------------------------------------------------------------
-// Synthesis LLM resolution
+// Single synthesis backend (like Perplexity: one model, no user-facing choice)
 //
-// The managed runtime supplies the built-in server-side LLM via BUILT_IN_FORGE_*.
-// For self-hosted or custom deployments (and for stronger explanatory answers),
-// any OpenAI-compatible chat-completions endpoint can be used instead, e.g.:
-//
-//   LLM_BASE_URL=https://router.huggingface.co/v1
-//   LLM_API_KEY=<hf token>
-//   LLM_MODEL=meta-models/Muse-Glimmer-30B
-//
-// HF_API_KEY + HF_MODEL are accepted as convenient aliases that imply the
-// Hugging Face Inference Providers router. The model itself is never trained or
-// hosted here; it is called as a remote service. If nothing is configured the
-// managed built-in LLM is used, and if that is missing too the call fails
-// explicitly rather than substituting generated content.
+// meta-models/Muse-Glimmer-30B is an image-text-to-text model served through
+// Hugging Face Inference Providers. It is never trained or hosted here; it is
+// called as a remote service with the only required secret being HF_API_KEY.
+// User-attached images are passed to it as vision input. If the key is absent
+// the call fails explicitly rather than substituting generated content.
 
-export type SynthesisProvider =
-  | { kind: "managed" }
-  | { kind: "custom"; baseUrl: string; apiKey: string; model: string };
+const SYNTHESIS_MODEL = "meta-models/Muse-Glimmer-30B";
+const SYNTHESIS_ENDPOINT = "https://router.huggingface.co/v1/chat/completions";
 
-export function resolveSynthesisProvider(): SynthesisProvider {
-  const baseUrl = env("LLM_BASE_URL") || (env("HF_API_KEY") ? "https://router.huggingface.co/v1" : "");
-  const apiKey = env("LLM_API_KEY") || env("HF_API_KEY");
-  const model = env("LLM_MODEL") || env("HF_MODEL");
-  if (baseUrl && apiKey && model) return { kind: "custom", baseUrl, apiKey, model };
-  return { kind: "managed" };
+export function synthesisModelConfigured(): boolean {
+  return Boolean(env("HF_API_KEY"));
 }
 
 export async function callSynthesisLLM(params: Parameters<typeof invokeLLM>[0]): Promise<Awaited<ReturnType<typeof invokeLLM>>> {
-  const provider = resolveSynthesisProvider();
-  if (provider.kind === "managed") return invokeLLM(params);
-  const url = `${provider.baseUrl.replace(/\/$/, "")}/chat/completions`;
-  const res = await fetch(url, {
+  const apiKey = env("HF_API_KEY");
+  if (!apiKey) throw new Error("Synthesis model is not configured: HF_API_KEY is missing. No answer was generated.");
+  const res = await fetch(SYNTHESIS_ENDPOINT, {
     method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${provider.apiKey}` },
-    body: JSON.stringify({ model: provider.model, messages: params.messages, temperature: 0.2 }),
+    headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({ model: SYNTHESIS_MODEL, messages: params.messages, temperature: 0.2 }),
     signal: AbortSignal.timeout(Math.max(timeoutMs, 120000)),
   });
   if (!res.ok) {
     const detail = (await res.text().catch(() => "")).slice(0, 200);
-    throw new Error(`Synthesis model ${provider.model} returned HTTP ${res.status}: ${detail}`);
+    throw new Error(`Synthesis model ${SYNTHESIS_MODEL} returned HTTP ${res.status}: ${detail}`);
   }
   return (await res.json()) as Awaited<ReturnType<typeof invokeLLM>>;
 }

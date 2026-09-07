@@ -83,41 +83,32 @@ describe("knowledge provider registry", () => {
   });
 });
 
-describe("synthesis provider resolution", () => {
-  it("uses the managed built-in LLM when no custom endpoint is configured", async () => {
+describe("single synthesis backend", () => {
+  it("fails explicitly when the HF_API_KEY secret is missing instead of fabricating an answer", async () => {
     const before = { ...process.env };
-    delete process.env.LLM_BASE_URL; delete process.env.LLM_API_KEY; delete process.env.LLM_MODEL;
-    delete process.env.HF_API_KEY; delete process.env.HF_MODEL;
-    const { resolveSynthesisProvider } = await import("./research");
-    expect(resolveSynthesisProvider()).toEqual({ kind: "managed" });
+    delete process.env.HF_API_KEY;
+    const { callSynthesisLLM, synthesisModelConfigured } = await import("./research");
+    expect(synthesisModelConfigured()).toBe(false);
+    await expect(callSynthesisLLM({ messages: [{ role: "user", content: "hi" }] })).rejects.toThrow(/HF_API_KEY is missing/);
     process.env = before;
   });
-  it("routes to a custom OpenAI-compatible endpoint when LLM_BASE_URL/LLM_API_KEY/LLM_MODEL are set", async () => {
+  it("calls the hardwired Muse-Glimmer-30B endpoint and passes user images through as vision input", async () => {
     const before = { ...process.env };
-    process.env.LLM_BASE_URL = "https://router.huggingface.co/v1";
-    process.env.LLM_API_KEY = "hf_test_token";
-    process.env.LLM_MODEL = "meta-models/Muse-Glimmer-30B";
-    const { resolveSynthesisProvider } = await import("./research");
-    expect(resolveSynthesisProvider()).toEqual({ kind: "custom", baseUrl: "https://router.huggingface.co/v1", apiKey: "hf_test_token", model: "meta-models/Muse-Glimmer-30B" });
-    process.env = before;
-  });
-  it("treats HF_API_KEY as an alias implying the Hugging Face inference router", async () => {
-    const before = { ...process.env };
-    delete process.env.LLM_BASE_URL; delete process.env.LLM_API_KEY; delete process.env.LLM_MODEL;
-    process.env.HF_API_KEY = "hf_alias_token";
-    process.env.HF_MODEL = "meta-models/Muse-Glimmer-30B";
-    const { resolveSynthesisProvider } = await import("./research");
-    expect(resolveSynthesisProvider()).toEqual({ kind: "custom", baseUrl: "https://router.huggingface.co/v1", apiKey: "hf_alias_token", model: "meta-models/Muse-Glimmer-30B" });
-    process.env = before;
-  });
-  it("never silently fabricates: incomplete custom config falls back to managed, and a missing managed key fails explicitly at call time", async () => {
-    const before = { ...process.env };
-    process.env.LLM_BASE_URL = "https://example.invalid/v1";
-    delete process.env.LLM_API_KEY; delete process.env.LLM_MODEL;
-    delete process.env.HF_API_KEY; delete process.env.HF_MODEL;
-    const { resolveSynthesisProvider, callSynthesisLLM } = await import("./research");
-    expect(resolveSynthesisProvider()).toEqual({ kind: "managed" });
-    await expect(callSynthesisLLM({ messages: [{ role: "user", content: "hi" }] })).rejects.toThrow(/not configured|OPENAI_API_KEY/);
+    process.env.HF_API_KEY = "hf_test_token";
+    const { callSynthesisLLM } = await import("./research");
+    const originalFetch = globalThis.fetch;
+    const calls: Array<{ url: string; body: any; auth: string }> = [];
+    globalThis.fetch = (async (url: any, init: any) => {
+      calls.push({ url: String(url), body: JSON.parse(init.body), auth: init.headers.authorization });
+      return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as any;
+    const result = await callSynthesisLLM({ messages: [{ role: "user", content: [{ type: "text", text: "what is in this image?" }, { type: "image_url", image_url: { url: "data:image/png;base64,eHh4" } }] }] });
+    globalThis.fetch = originalFetch;
+    expect(calls[0].url).toBe("https://router.huggingface.co/v1/chat/completions");
+    expect(calls[0].auth).toBe("Bearer hf_test_token");
+    expect(calls[0].body.model).toBe("meta-models/Muse-Glimmer-30B");
+    expect(calls[0].body.messages[0].content[1].type).toBe("image_url");
+    expect(result.choices?.[0]?.message?.content).toBe("ok");
     process.env = before;
   });
 });

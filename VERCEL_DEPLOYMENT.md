@@ -20,7 +20,7 @@ The deployed Vercel project must be publicly reachable for browser API calls. Th
 | Managed backend, free research defaults | `ENABLE_PAID_SEARCH=false`, `SEARCH_PROVIDER=wikipedia`, `ACADEMIC_SEARCH_PROVIDER=arxiv` | No-card live research through public providers. |
 | Optional backend configuration | `MAX_SEARCH_QUERIES`, `MAX_SOURCES`, `RESEARCH_TIMEOUT_MS`, `MAX_RESEARCH_ROUNDS` | Bound request cost, time, and scope. |
 | Optional paid backend adapters | `ENABLE_PAID_SEARCH=true`, `SEARCH_PROVIDER=brave` or `tavily`, plus the matching provider key | Paid search only when explicitly enabled. |
-| Optional synthesis model | `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` (or `HF_API_KEY`, `HF_MODEL`) | Use any OpenAI-compatible answer model (e.g. Hugging Face Inference Providers) instead of the managed built-in LLM. Incomplete configuration falls back to the managed LLM; nothing is fabricated. |
+| Synthesis model (required for answers) | `HF_API_KEY` | Hugging Face token for the single fixed backend: `meta-models/Muse-Glimmer-30B` via Inference Providers. Missing key fails explicitly; no fallback and no fabricated answers. |
 | Vercel frontend | `VITE_OAUTH_PORTAL_URL`, `VITE_APP_ID` | Public client configuration referenced directly by the browser bundle. |
 | Optional split frontend | `VITE_API_ORIGIN` | Explicit backend origin override; leave unset on the current Vercel host to use the built-in managed-backend fallback. |
 
