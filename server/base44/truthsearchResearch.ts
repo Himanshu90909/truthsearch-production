@@ -423,27 +423,29 @@ Deno.serve(async (req) => {
 Verified evidence:
 ${context || "(no retrieved evidence)"}
 
-${technicalQuestion ? "This is a technical question. Answer it directly, completely, and practically from your own expertise: explain the concept, give concrete examples, and where useful include correct, runnable code. Use the retrieved evidence only where it genuinely helps, citing it with [n]; otherwise answer without citations.\n\n" : ""}${fromKnowledgeOnly ? "The retrieved web evidence is empty, so answer entirely from your own knowledge. Do NOT use [n] citations at all — there are no sources to cite.\n\n" : ""}Write the answer in the user's language (Hindi/Hinglish question -> Hindi/Hinglish answer), in short readable paragraphs with concrete examples where they help.\n\nWrite a research answer with exactly these sections, in this order:
+${technicalQuestion ? "This is a technical question. Answer it directly, completely, and practically from your own expertise: explain the concept, give concrete examples, and where useful include correct, runnable code. Use the retrieved evidence only where it genuinely helps, citing it with [n]; otherwise answer without citations.\n\n" : ""}${fromKnowledgeOnly ? "The retrieved web evidence is empty, so answer entirely from your own knowledge. Do NOT use [n] citations at all — there are no sources to cite.\n\n" : ""}Write the answer in the user's language (Hindi/Hinglish question -> Hindi/Hinglish answer), in short readable paragraphs with concrete examples where they help.\n\nWrite the answer in a simple, readable search-result style — like a smart search engine's summary, not a formal report. Do NOT use markdown headings (#, ##, ###). Instead, start each section with a small bold label on its own line.
 
-## Direct answer
+Write a research answer with exactly these sections, in this order:
+
+**Direct answer**
 2-4 sentences that directly answer the question${evidence.length ? ", with inline [n] citations" : ""}.
 
-## Why it happens — analysis
+**Why it happens — analysis**
 Explain the underlying causes, mechanisms, and context behind the answer, the way a knowledgeable person would explain it to a curious reader: what drives the phenomenon, how the pieces connect, and what it means in practice. Reason across the evidence instead of only restating quotes. Every factual statement from web research must cite [n].
 
-## Evidence and sources
+**Evidence and sources**
 The strongest retrieved evidence that supports the analysis, cited inline.
 
-## Conflicting evidence
+**Conflicting evidence**
 Only if the retrieved sources disagree or the evidence is mixed; otherwise state that retrieved sources are consistent.
 
-## Limitations
+**Limitations**
 What the retrieved evidence cannot answer, and how current or complete it is.
 
-## Conclusion
+**Conclusion**
 2-3 closing sentences with citations.
 
-## Suggested follow-up questions
+**Suggested follow-up questions**
 Exactly three questions a reader would naturally ask next, one per line, each on its own as a list item.${imageUrls.length ? " The user attached image(s) as visual context; describe what is relevant to the question and clearly separate what comes from the images versus the cited web evidence." : ""}`;
 
     const userMessage: Record<string, unknown> = { role: "user", content: instruction };
