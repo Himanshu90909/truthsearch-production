@@ -173,17 +173,55 @@ function researchTrpcFetch(input: RequestInfo | URL, init?: RequestInit): Promis
         }
 
         if (method === "POST" && proc === "research.extractDocument") {
-          // Document extraction needs the tRPC origin; try it once for
-          // single-op requests, otherwise surface an honest message.
-          if (procedures.length === 1) {
-            try {
-              const originRes = await globalThis.fetch(input, { ...(init ?? {}), credentials: "include" });
-              if (originRes.ok) return originRes;
-            } catch {
-              // origin unavailable
-            }
+          // Documents are parsed entirely in the browser — no server needed.
+          const dataUrl = String(parsed.dataUrl || "");
+          const filename = String(parsed.filename || "").toLowerCase();
+          const m = dataUrl.match(/^data:([^;]+);base64,([\s\S]*)$/);
+          if (!m) {
+            results.push({ error: { message: "Document could not be read — try re-uploading the file." } });
+            continue;
           }
-          results.push({ error: { message: "Document reading is temporarily unavailable — please paste the relevant text instead, or attach an image (images still work)." } });
+          const bin = atob(m[2]);
+          const bytes = new Uint8Array(bin.length);
+          for (let j = 0; j < bin.length; j++) bytes[j] = bin.charCodeAt(j);
+          let text = "";
+          try {
+            if (filename.endsWith(".pdf")) {
+              const { extractText, getDocumentProxy } = await import("unpdf");
+              const pdf = await getDocumentProxy(bytes);
+              const extracted = await extractText(pdf, { mergePages: true });
+              text = extracted.text || "";
+            } else if (filename.endsWith(".docx")) {
+              const mammothMod = await import("mammoth");
+              const mammoth = (mammothMod as unknown as { default?: typeof mammothMod }).default ?? mammothMod;
+              const arrayBuffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+              const extracted = await mammoth.extractRawText({ arrayBuffer });
+              text = extracted.value || "";
+            } else if (filename.endsWith(".xlsx")) {
+              const xlsx = await import("xlsx");
+              const workbook = xlsx.read(bytes, { type: "array" });
+              text = workbook.SheetNames.map(
+                (sheetName) => `--- Sheet: ${sheetName} ---\n${xlsx.utils.sheet_to_csv(workbook.Sheets[sheetName])}`
+              ).join("\n\n");
+            } else if (filename.endsWith(".txt") || filename.endsWith(".csv") || filename.endsWith(".md")) {
+              text = new TextDecoder().decode(bytes);
+            } else if (filename.endsWith(".doc")) {
+              results.push({ error: { message: "Legacy .doc files are not supported — please upload the .docx version." } });
+              continue;
+            } else {
+              results.push({ error: { message: "That document type is not supported. Use PDF, DOCX, XLSX, TXT, CSV, or MD." } });
+              continue;
+            }
+          } catch {
+            results.push({ error: { message: "Document processing failed — try another file." } });
+            continue;
+          }
+          const clean = text.replace(/\r/g, "").replace(/\n{3,}/g, "\n\n").trim();
+          if (clean.length < 60) {
+            results.push({ error: { message: "No readable text could be extracted from this document." } });
+            continue;
+          }
+          results.push({ result: { data: { json: { text: clean.slice(0, 60000), characters: clean.length } } } });
           continue;
         }
 
