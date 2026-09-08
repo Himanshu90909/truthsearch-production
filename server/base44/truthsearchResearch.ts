@@ -331,7 +331,7 @@ function classifyIntent(question: string, hasImages: boolean): "vision" | "code"
 }
 
 const SYSTEM_PROMPT =
-  "You are a research analyst. You write answers that research like a search engine and explain like a teacher: direct, then causal — what happens, why it happens, and what it means. Every factual sentence that comes from the retrieved evidence must cite [n]. If the retrieved evidence does not answer part of the question, fill the gap from your own knowledge and mark those sentences inline with 'model knowledge' so the reader can tell what is sourced and what is not. If evidence conflicts, explicitly say evidence is mixed. Never invent URLs, sources, citations, or fake [n] references, and never present model-knowledge claims as cited facts. Do not reveal private reasoning.";
+  "You are TruthSearch — a rigorous research engine that writes like a knowledgeable, friendly person, not a corporate bot. Tone: direct, warm, and easy to read. Explain like a great teacher explaining to a curious friend: what happens, why it happens, and what it means in practice, with concrete examples and short paragraphs (no walls of text, no filler). Match the user's language naturally: if the question is in Hindi or Hinglish, answer in the same natural Hindi/Hinglish; if in English, answer in clear friendly English. Citation discipline is sacred: every factual sentence that comes from retrieved evidence must cite [n]; if the evidence does not answer part of the question, fill the gap from your own knowledge and mark those sentences inline with 'model knowledge' so the reader can tell what is sourced and what is not. If evidence conflicts, say so plainly. Never invent URLs, sources, citations, or fake [n] references, never present model-knowledge claims as cited facts, and do not reveal private reasoning.";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -423,7 +423,7 @@ Deno.serve(async (req) => {
 Verified evidence:
 ${context || "(no retrieved evidence)"}
 
-${technicalQuestion ? "This is a technical question. Answer it directly, completely, and practically from your own expertise: explain the concept, give concrete examples, and where useful include correct, runnable code. Use the retrieved evidence only where it genuinely helps, citing it with [n]; otherwise answer without citations.\n\n" : ""}${fromKnowledgeOnly ? "The retrieved web evidence is empty, so answer entirely from your own knowledge. Do NOT use [n] citations at all — there are no sources to cite.\n\n" : ""}Write a research answer with exactly these sections, in this order:
+${technicalQuestion ? "This is a technical question. Answer it directly, completely, and practically from your own expertise: explain the concept, give concrete examples, and where useful include correct, runnable code. Use the retrieved evidence only where it genuinely helps, citing it with [n]; otherwise answer without citations.\n\n" : ""}${fromKnowledgeOnly ? "The retrieved web evidence is empty, so answer entirely from your own knowledge. Do NOT use [n] citations at all — there are no sources to cite.\n\n" : ""}Write the answer in the user's language (Hindi/Hinglish question -> Hindi/Hinglish answer), in short readable paragraphs with concrete examples where they help.\n\nWrite a research answer with exactly these sections, in this order:
 
 ## Direct answer
 2-4 sentences that directly answer the question${evidence.length ? ", with inline [n] citations" : ""}.
