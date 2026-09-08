@@ -70,100 +70,141 @@ async function runResearch(question: string, contextText?: string, imageUrls?: s
   return id;
 }
 
+// tRPC routing: httpBatchLink batches several procedures into ONE request
+// (comma-separated paths like /research.providers,research.plan?batch=1),
+// so every local response must contain one result entry per procedure, in
+// the same order as the request paths.
+const LOCAL_GET_PROC = /^research\.(providers|plan|list|get)$|^auth\.(me|session)$/;
+const LOCAL_POST_PROC = /^research\.(start|followUp|attachImage|extractDocument)$/;
+
+const PROVIDERS_PAYLOAD = {
+  web: "wikipedia",
+  academic: "arxiv",
+  paidSearchEnabled: false,
+  configured: true,
+  knowledge: [
+    { name: "wikipedia", category: "web", enabled: true, status: "healthy" },
+    { name: "arxiv", category: "academic", enabled: true, status: "healthy" },
+    { name: "europepmc", category: "academic", enabled: true, status: "healthy" },
+    { name: "gemini", category: "synthesis", enabled: true, status: "healthy" },
+    { name: "groq", category: "synthesis", enabled: true, status: "healthy" },
+  ],
+};
+
+const trpcResponse = (results: unknown[]) =>
+  new Response(JSON.stringify(results), { status: 200, headers: { "Content-Type": "application/json" } });
+
 function researchTrpcFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
   const method = (init?.method || "GET").toUpperCase();
 
-  // Image attachments never need a server upload: the browser resizes the
-  // image to a compact data URI and the Base44 research function accepts
-  // data URIs directly. This keeps the app working even when the tRPC
-  // origin is unavailable.
-  if (method === "POST" && /\/research\.attachImage(\?|$)/.test(url)) {
-    return (async () => {
-      const raw = init?.body ? JSON.parse(String(init.body)) : {};
-      const rawOps = Array.isArray(raw) ? raw : [raw["0"] ?? raw];
-      const parsedInput = ((rawOps[0]?.json ?? rawOps[0] ?? {}) as { filename?: string; dataUrl?: string });
-      const dataUrl = parsedInput.dataUrl || "";
-      const valid =
-        /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(dataUrl) &&
-        dataUrl.length <= 7_500_000;
-      if (!valid) {
-        return new Response(
-          JSON.stringify([{ error: { message: "Image could not be read. Try a JPG, PNG, or WebP under 5 MB." } }]),
-          { status: 200, headers: { "Content-Type": "application/json" } }
-        );
-      }
-      return new Response(
-        JSON.stringify([{ result: { data: { json: { url: dataUrl } } } }]),
-        { status: 200, headers: { "Content-Type": "application/json" } }
-      );
-    })();
+  let procedures: string[] = [];
+  let inputList: unknown[] = [];
+  try {
+    const parsedUrl = new URL(url);
+    const trpcSegment = parsedUrl.pathname.indexOf("/api/trpc/") >= 0 ? "/api/trpc/" : "/trpc/";
+    const procPath = parsedUrl.pathname.split(trpcSegment)[1] ?? "";
+    procedures = procPath.split(",").map((p) => p.trim()).filter(Boolean);
+    let decodedInput: unknown = {};
+    if (method === "GET") {
+      const raw = parsedUrl.searchParams.get("input");
+      decodedInput = raw ? JSON.parse(raw) : {};
+    } else if (init?.body) {
+      decodedInput = JSON.parse(String(init.body));
+    }
+    if (Array.isArray(decodedInput)) {
+      inputList = decodedInput;
+    } else if (decodedInput && typeof decodedInput === "object" && Object.keys(decodedInput as Record<string, unknown>).length > 0) {
+      // arrayToDict: {"0":{"json":...},"1":{...}} — or a single {"json":...}
+      const dict = decodedInput as Record<string, unknown>;
+      inputList = procedures.map((_, i) => dict[String(i)] ?? (dict as Record<string, unknown>)[i as unknown as string] ?? (i === 0 ? dict : {}));
+    } else {
+      inputList = procedures.map(() => ({}));
+    }
+  } catch {
+    return globalThis.fetch(input, { ...(init ?? {}), credentials: "include" });
   }
 
-  if (method === "POST" && /\/research\.(start|followUp)(\?|$)/.test(url)) {
-    const isFollowUp = url.includes("research.followUp");
-    return (async () => {
-      const raw = init?.body ? JSON.parse(String(init.body)) : {};
-      // tRPC v11 httpBatchLink sends batched ops as arrayToDict: {"0":{"json":{...}}}
-      const rawOps = Array.isArray(raw) ? raw : [raw["0"] ?? raw];
-      const first = rawOps[0];
-      const parsedInput = ((first?.json ?? first ?? {}) as ResearchInput);
-      let question = parsedInput.question || "";
-      let contextText = parsedInput.contextText;
-      if (isFollowUp && parsedInput.id) {
-        const previous = researchCache.get(parsedInput.id) as { session?: { question?: string; answer?: string | null } } | undefined;
-        question = `${previous?.session?.question ?? ""}\nFollow-up: ${question}`.trim();
-        if (previous?.session?.answer) {
-          contextText = `Previous verified answer:\n${previous.session.answer.slice(0, 12000)}`;
+  const opInput = (i: number): Record<string, unknown> => {
+    const first = inputList[i] as Record<string, unknown> | undefined;
+    return ((first?.json as Record<string, unknown>) ?? first ?? {}) as Record<string, unknown>;
+  };
+
+  const needsLocal =
+    (method === "GET" && procedures.some((p) => LOCAL_GET_PROC.test(p))) ||
+    (method === "POST" && procedures.some((p) => LOCAL_POST_PROC.test(p)));
+
+  if (!needsLocal || procedures.length === 0) {
+    return globalThis.fetch(input, { ...(init ?? {}), credentials: "include" });
+  }
+
+  return (async () => {
+    const results: unknown[] = [];
+    for (let i = 0; i < procedures.length; i++) {
+      const proc = procedures[i];
+      const parsed = opInput(i) as ResearchInput & { filename?: string; dataUrl?: string };
+      try {
+        if (method === "POST" && (proc === "research.start" || proc === "research.followUp")) {
+          let question = parsed.question || "";
+          let contextText = parsed.contextText;
+          if (proc === "research.followUp" && parsed.id) {
+            const previous = researchCache.get(parsed.id) as { session?: { question?: string; answer?: string | null } } | undefined;
+            question = `${previous?.session?.question ?? ""}\nFollow-up: ${question}`.trim();
+            if (previous?.session?.answer) {
+              contextText = `Previous verified answer:\n${previous.session.answer.slice(0, 12000)}`;
+            }
+          }
+          const id = await runResearch(question, contextText, parsed.imageUrls);
+          results.push({ result: { data: { json: { id } } } });
+          continue;
         }
-      }
-      const id = await runResearch(question, contextText, parsedInput.imageUrls);
-      return new Response(JSON.stringify([{ result: { data: { json: { id } } } }]), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    })();
-  }
 
-  if (method === "GET" && url.includes("research.providers")) {
-    return (async () =>
-      new Response(
-        JSON.stringify([
-          {
-            result: {
-              data: {
-                json: {
-                  web: "wikipedia",
-                  academic: "arxiv",
-                  paidSearchEnabled: false,
-                  configured: true,
-                  knowledge: [
-                    { name: "wikipedia", category: "web", enabled: true, status: "healthy" },
-                    { name: "arxiv", category: "academic", enabled: true, status: "healthy" },
-                    { name: "europepmc", category: "academic", enabled: true, status: "healthy" },
-                    { name: "gemini", category: "synthesis", enabled: true, status: "healthy" },
-                    { name: "groq", category: "synthesis", enabled: true, status: "healthy" },
-                  ],
-                },
-              },
-            },
-          },
-        ]),
-        { status: 200, headers: { "Content-Type": "application/json" } }
-      ))();
-  }
+        if (method === "POST" && proc === "research.attachImage") {
+          const dataUrl = parsed.dataUrl || "";
+          const valid =
+            /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(dataUrl) && dataUrl.length <= 7_500_000;
+          if (!valid) {
+            results.push({ error: { message: "Image could not be read. Try a JPG, PNG, or WebP under 5 MB." } });
+          } else {
+            // The Base44 research function accepts data URIs directly — no upload needed.
+            results.push({ result: { data: { json: { url: dataUrl } } } });
+          }
+          continue;
+        }
 
-  if (method === "GET" && url.includes("research.plan")) {
-    return (async () => {
-      const parsedUrl = new URL(url);
-      const rawInput = parsedUrl.searchParams.get("input");
-      const decoded = rawInput ? JSON.parse(rawInput) : {};
-      const first = Array.isArray(decoded) ? decoded[0] : (decoded["0"] ?? decoded);
-      const input = ((first?.json ?? first ?? {}) as { question?: string });
-      const q = (input.question || "").replace(/\?+$/, "").trim();
-      return new Response(
-        JSON.stringify([
-          {
+        if (method === "POST" && proc === "research.extractDocument") {
+          // Document extraction needs the tRPC origin; try it once for
+          // single-op requests, otherwise surface an honest message.
+          if (procedures.length === 1) {
+            try {
+              const originRes = await globalThis.fetch(input, { ...(init ?? {}), credentials: "include" });
+              if (originRes.ok) return originRes;
+            } catch {
+              // origin unavailable
+            }
+          }
+          results.push({ error: { message: "Document reading is temporarily unavailable — please paste the relevant text instead, or attach an image (images still work)." } });
+          continue;
+        }
+
+        if (proc === "research.get") {
+          const payload = researchCache.get(parsed.id as number);
+          if (!payload) {
+            results.push({ error: { message: "Research session not found." } });
+          } else {
+            results.push({ result: { data: { json: payload } } });
+          }
+          continue;
+        }
+
+        if (proc === "research.providers") {
+          results.push({ result: { data: { json: PROVIDERS_PAYLOAD } } });
+          continue;
+        }
+
+        if (proc === "research.plan") {
+          const q = String(parsed.question || "").replace(/\?+$/, "").trim();
+          results.push({
             result: {
               data: {
                 json: {
@@ -175,76 +216,34 @@ function researchTrpcFetch(input: RequestInfo | URL, init?: RequestInit): Promis
                 },
               },
             },
-          },
-        ]),
-        { status: 200, headers: { "Content-Type": "application/json" } }
-      );
-    })();
-  }
+          });
+          continue;
+        }
 
-  if (method === "GET" && url.includes("research.list")) {
-    return (async () => {
-      const items = Array.from(researchCache.entries())
-        .map(([id, payload]) => {
-          const session = (payload as { session?: { title?: string; status?: string; createdAt?: string } }).session;
-          return { id, title: session?.title || "Research", status: session?.status || "completed", createdAt: session?.createdAt };
-        })
-        .reverse();
-      return new Response(
-        JSON.stringify([{ result: { data: { json: items } } }]),
-        { status: 200, headers: { "Content-Type": "application/json" } }
-      );
-    })();
-  }
+        if (proc === "research.list") {
+          const items = Array.from(researchCache.entries())
+            .map(([id, payload]) => {
+              const session = (payload as { session?: { title?: string; status?: string; createdAt?: string } }).session;
+              return { id, title: session?.title || "Research", status: session?.status || "completed", createdAt: session?.createdAt };
+            })
+            .reverse();
+          results.push({ result: { data: { json: items } } });
+          continue;
+        }
 
-  if (method === "GET" && url.includes("auth.me")) {
-    return (async () =>
-      new Response(JSON.stringify([{ result: { data: { json: null } } }]), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }))();
-  }
+        if (proc === "auth.me" || proc === "auth.session") {
+          results.push({ result: { data: { json: null } } });
+          continue;
+        }
 
-  // Document extraction (PDF/DOCX/XLSX) runs on the tRPC origin. If that
-  // origin is unavailable, surface a clear, honest message instead of a crash.
-  if (method === "POST" && /\/research\.extractDocument(\?|$)/.test(url)) {
-    return (async () => {
-      try {
-        const originRes = await globalThis.fetch(input, { ...(init ?? {}), credentials: "include" });
-        if (originRes.ok) return originRes;
-      } catch {
-        // fall through to the honest error below
+        // Non-local procedure inside a mixed batch.
+        results.push({ error: { message: `Procedure ${proc} is not available in local mode.` } });
+      } catch (err) {
+        results.push({ error: { message: err instanceof Error ? err.message : "Request failed." } });
       }
-      return new Response(
-        JSON.stringify([{ error: { message: "Document reading is temporarily unavailable — please paste the relevant text instead, or attach an image (images still work)." } }]),
-        { status: 200, headers: { "Content-Type": "application/json" } }
-      );
-    })();
-  }
-
-  if (method === "GET" && url.includes("research.get")) {
-    return (async () => {
-      const parsedUrl = new URL(url);
-      const rawInput = parsedUrl.searchParams.get("input");
-      const decoded = rawInput ? JSON.parse(rawInput) : {};
-      // Batched query inputs arrive as {"0":{"json":{"id":...}}}
-      const first = Array.isArray(decoded) ? decoded[0] : (decoded["0"] ?? decoded);
-      const id = (first?.json ?? first)?.id as number | undefined;
-      const payload = researchCache.get(id as number);
-      if (!payload) {
-        return new Response(JSON.stringify([{ error: { message: "Research session not found." } }]), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      return new Response(JSON.stringify([{ result: { data: { json: payload } } }]), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    })();
-  }
-
-  return globalThis.fetch(input, { ...(init ?? {}), credentials: "include" });
+    }
+    return trpcResponse(results);
+  })();
 }
 
 const trpcClient = trpc.createClient({
