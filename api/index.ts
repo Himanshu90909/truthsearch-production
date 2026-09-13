@@ -1,22 +1,24 @@
-// Vercel serverless entrypoint. Export the Express app directly so the
-// platform bundles the server graph as an ESM Node function. This avoids
-// loading a generated CommonJS file at runtime.
-import { createApp } from "../server/_core/app";
-import type { Request, Response, NextFunction } from "express";
+import type { Request, Response } from "express";
 
-const app = createApp();
+type ExpressHandler = (req: Request, res: Response) => unknown;
+let appPromise: Promise<ExpressHandler> | undefined;
 
-app.use((req: Request, res: Response, next: NextFunction) => {
-  if (req.path === "/api/__build") {
-    res.status(200).json({
-      build: process.env.VERCEL_GIT_COMMIT_SHA || "dev",
-      node: process.version,
-      hfKey: Boolean(process.env.HF_API_KEY),
-      sync: process.env.SYNC_RESEARCH === "true" || process.env.VERCEL === "1",
+export default async function handler(req: Request, res: Response): Promise<unknown> {
+  try {
+    appPromise ??= import("../server/_core/app").then(({ createApp }) => {
+      const app = createApp();
+      return app as unknown as ExpressHandler;
     });
-    return;
+    const app = await appPromise;
+    return app(req, res);
+  } catch (error) {
+    console.error("[Vercel API initialization]", error);
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: "API initialization failed",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return undefined;
   }
-  next();
-});
-
-export default app;
+}
