@@ -4,6 +4,10 @@
 
 **HB Innovators by Himanshu Suthar** is the creator attribution for this TruthSearch research workspace. TruthSearch is a research workspace for asking arbitrary questions and inspecting the path from live retrieval to cited synthesis. It does not ship a demo answer bank and it does not present model-knowledge answers as sourced research — answers that fall back to the model are labeled as such.
 
+## Snapdragon Edition (on-device AI, NPU)
+
+TruthSearch now has a fully on-device path for **Snapdragon-powered HP PCs** (Omnibook Ultra / Omnibook 3, Snapdragon X Elite / X2 Elite). The AI stack — semantic evidence reranking (all-MiniLM-L6-v2, w8a16) and cited synthesis (Llama-v3.2-3B-Instruct, w4a16), both from [Qualcomm AI Hub](https://aihub.qualcomm.com) — runs on the Hexagon NPU via the QNN execution provider. Same research boundary, same citation audit, zero cloud AI calls: questions and evidence never leave the device, and the demo runs fully offline. See [`snapdragon/README.md`](snapdragon/README.md) and the challenge submission in [`PROPOSAL.md`](PROPOSAL.md).
+
 ## No-card operating mode
 
 The default web adapter is the public Wikipedia API and the default academic adapter is Semantic Scholar. These services may be rate-limited and are not a guarantee of broad web coverage, but they allow development and real queries without purchasing a search card. For stronger general-web coverage, configure Brave or Tavily using project secrets; if a selected paid provider is not configured, the session fails explicitly rather than falling back to fabricated data.

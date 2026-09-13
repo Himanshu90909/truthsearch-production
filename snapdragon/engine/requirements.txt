@@ -1,0 +1,8 @@
+# TruthSearch Snapdragon layer - requirements
+# Windows on Snapdragon (ARM64): install the QNN-enabled builds noted in ../README.md.
+
+onnxruntime>=1.18.0            # CPU dev fallback; QNN builds ship separately on WoS
+onnxruntime-genai>=0.4.0       # on-device LLM generation (Llama 3.2 3B w4a16)
+transformers>=4.44.0            # local tokenizer loading only - no network calls
+numpy>=1.26.0
+sentencepiece>=0.2.0            # Llama tokenizer

@@ -1,0 +1,47 @@
+{
+  "$comment": "On-device AI models for the Snapdragon AI Lab Build & Present Challenge. All entries reference models published on Qualcomm AI Hub (https://aihub.qualcomm.com), pre-quantized and NPU-compiled for Snapdragon X Elite / X2 Elite platforms (HP Omnibook Ultra / Omnibook 3).",
+  "synthesis": {
+    "name": "Llama-v3.2-3B-Instruct",
+    "aihub_id": "llama_v3_2_3b_instruct",
+    "aihub_url": "https://aihub.qualcomm.com/compute/models/llama_v3_2_3b_instruct",
+    "huggingface_repo": "qualcomm/Llama-v3.2-3B-Instruct",
+    "quantization": "w4a16 (partially w8a16) - 4-bit weights, 16-bit activations",
+    "runtime": "ONNX Runtime GenAI (og-runtimes) with QNN execution provider (QNN_HTP)",
+    "supported_chipsets": ["Snapdragon X Elite", "Snapdragon X2 Elite"],
+    "role": "On-device explanatory synthesis. Replaces the remote Gemini/Groq/HF chain for the offline path: generates the cited, structured research answer entirely on the NPU.",
+    "context_window": 4096,
+    "notes": "A SSD (Self Speculative Decoding) variant 'llama_v3_2_3b_instruct_ssd' exists for faster token generation on supported devices with identical output accuracy."
+  },
+  "fallback_synthesis": {
+    "name": "Llama-v3.2-1B-Instruct",
+    "aihub_id": "llama_v3_2_1b_instruct",
+    "aihub_url": "https://aihub.qualcomm.com/compute/models/llama_v3_2_1b_instruct",
+    "huggingface_repo": "qualcomm/Llama-v3.2-1B-Instruct",
+    "quantization": "w4a16",
+    "runtime": "ONNX Runtime GenAI with QNN execution provider",
+    "supported_chipsets": ["Snapdragon X Elite", "Snapdragon X2 Elite"],
+    "role": "Lower-memory fallback when evidence context is short or memory pressure is high."
+  },
+  "embeddings": {
+    "name": "All-MiniLM-L6-v2",
+    "aihub_id": "mobilenet alternative; see aihub embeddings list",
+    "aihub_url": "https://aihub.qualcomm.com/models",
+    "huggingface_repo": "qualcomm/all-MiniLM-L6-v2",
+    "quantization": "w8a16",
+    "runtime": "ONNX Runtime with QNN execution provider (QNN_HTP)",
+    "role": "On-device evidence reranking. Embeds the query and each retrieved passage locally; replaces lexical ranking with semantic similarity so the whole evidence-scoring stage runs on the NPU without any network call.",
+    "output_dim": 384
+  },
+  "runtime_stack": {
+    "primary": {
+      "provider": "QNN_HTP (Qualcomm AI Runtime, Hexagon Tensor Processor)",
+      "via": "onnxruntime / onnxruntime-genai Python or JavaScript bindings",
+      "target": "Windows 11 on Snapdragon (ARM64), HP Omnibook Ultra / Omnibook 3"
+    },
+    "development_fallback": {
+      "provider": "CPU (onnxruntime default execution provider)",
+      "via": "same Python entry points",
+      "target": "any x86/ARM64 dev machine; used only when QNN is unavailable, results identical, speed lower"
+    }
+  }
+}

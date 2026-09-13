@@ -1,0 +1,17 @@
+[
+  {
+    "url": "https://en.wikipedia.org/wiki/Lithium-ion_battery",
+    "title": "Lithium-ion battery",
+    "text": "Lithium-ion batteries degrade over time primarily through the growth of the solid electrolyte interphase (SEI) layer on the anode, which permanently consumes cyclable lithium. High temperatures accelerate parasitic reactions, and charging to high voltages stresses the cathode, causing transition-metal dissolution and structural cracking. Each charge-discharge cycle also causes mechanical stress from graphite lattice expansion and contraction."
+  },
+  {
+    "url": "https://en.wikipedia.org/wiki/Solid_electrolyte_interphase",
+    "title": "Solid electrolyte interphase",
+    "text": "The SEI is a passivation layer formed from electrolyte decomposition products on the negative electrode. It is beneficial because it prevents further electrolyte reduction, but its continued slow growth consumes lithium inventory, increases cell impedance, and is the dominant calendar-aging mechanism in lithium-ion cells."
+  },
+  {
+    "url": "https://en.wikipedia.org/wiki/Battery_aging",
+    "title": "Battery aging",
+    "text": "Battery capacity fade combines calendar aging (time-dependent, driven by temperature and state of charge) with cycle aging (usage-dependent, driven by depth of discharge and current magnitude). Some capacity loss can be temporarily recovered by rest; SEI growth and cathode cracking are irreversible."
+  }
+]
