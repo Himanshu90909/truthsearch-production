@@ -156,9 +156,9 @@ export function scoreSource(hit: SearchHit, domain: string, relevance = 0): numb
 // ---------------------------------------------------------------------------
 // Single synthesis backend (like Perplexity: one model, no user-facing choice)
 //
-// meta-models/Muse-Glimmer-30B is an image-text-to-text model served through
-// Hugging Face Inference Providers. It is never trained or hosted here; it is
-// called as a remote service with the only required secret being HF_API_KEY.
+// Qwen/Qwen3.8-27B is served through Hugging Face Inference Providers. It is
+// not trained or hosted inside this web runtime; it is called as a remote
+// service with the only required secret being HF_API_KEY.
 // User-attached images are passed to it as vision input. If the key is absent
 // the call fails explicitly rather than substituting generated content.
 
@@ -166,9 +166,9 @@ export function scoreSource(hit: SearchHit, domain: string, relevance = 0): numb
 // trending top HF models served through Inference Providers, with automatic cascade.
 const SYNTHESIS_ENDPOINT = "https://router.huggingface.co/v1/chat/completions";
 const SYNTHESIS_MODELS: Record<"vision" | "code" | "general", string[]> = {
-  vision: ["zai-org/GLM-5.3-Flash", "meta-models/Muse-Glimmer-30B"], // image-text-to-text
-  code: ["deepseek-ai/DeepSeek-V4-Flash-0731", "zai-org/GLM-5.3"], // technical/code answers
-  general: ["zai-org/GLM-5.3", "deepseek-ai/DeepSeek-V4-Flash-0731"],
+  vision: ["Qwen/Qwen3.8-27B", "zai-org/GLM-5.3-Flash"], // native image-text-to-text
+  code: ["Qwen/Qwen3.8-27B", "deepseek-ai/DeepSeek-V4-Flash-0731"], // technical/code answers
+  general: ["Qwen/Qwen3.8-27B", "zai-org/GLM-5.3"],
 };
 
 export function synthesisModelConfigured(): boolean {
@@ -185,7 +185,13 @@ export async function callSynthesisLLM(params: Parameters<typeof invokeLLM>[0], 
       const res = await fetch(SYNTHESIS_ENDPOINT, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({ model, messages: params.messages, temperature: 0.2 }),
+        body: JSON.stringify({
+          model,
+          messages: params.messages,
+          temperature: model === "Qwen/Qwen3.8-27B" ? 0.7 : 0.2,
+          max_tokens: 4096,
+          ...(model === "Qwen/Qwen3.8-27B" ? { reasoning_effort: "low" } : {}),
+        }),
         signal: AbortSignal.timeout(Math.max(timeoutMs, 120000)),
       });
       if (!res.ok) {

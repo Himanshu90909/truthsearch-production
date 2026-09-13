@@ -28,7 +28,7 @@ Synthesis runs through a three-provider free-tier chain with automatic failover,
 
 1. **Google Gemini 2.5 Flash** (primary; `GEMINI_API_KEY`, free tier ~1,500 requests/day, includes vision for image questions)
 2. **Groq GPT-OSS-120b, then Qwen3.8-27b** (fallback; `GROK_API_KEY`, free daily-reset limits, sub-second latency)
-3. **Hugging Face Inference Providers router** (last resort; `HF_API_KEY`, used while monthly included credits remain)
+3. **Hugging Face Inference Providers router** (last resort; `HF_API_KEY`, with `Qwen/Qwen3.8-27B` as the primary routed model and automatic fallback)
 
 If every provider fails, synthesis fails explicitly with the per-provider reasons; nothing is fabricated. Attached images are fetched, base64-inlined, and passed to the vision-capable primary as inline image parts, so a user can upload an image and ask about it. Models are never trained or hosted here — they are called as remote services.
 
@@ -40,4 +40,4 @@ Run `pnpm dev` for the application, `pnpm check` for TypeScript validation, `pnp
 
 ## Limitations recorded intentionally
 
-Public providers can throttle or reject requests. Some pages block automated retrieval or expose little readable text. Cross-source contradiction detection is currently conservative and should be expanded with labelled entailment data. Large-scale ML training, distributed jobs, model registry hosting, and production cross-encoder inference require an external GPU-capable service; they are not honestly performed inside the constrained single-process web runtime.
+Public providers can throttle or reject requests. Some pages block automated retrieval or expose little readable text. Cross-source contradiction detection is currently conservative and should be expanded with labelled entailment data. Qwen3.8-27B inference is routed remotely; actual 27B fine-tuning requires an external GPU-capable worker and is documented in [`training/README.md`](training/README.md), not performed inside the constrained single-process web runtime.

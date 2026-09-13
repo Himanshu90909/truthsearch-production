@@ -101,7 +101,7 @@ describe("single synthesis backend", () => {
     await expect(callSynthesisLLM({ messages: [{ role: "user", content: "hi" }] })).rejects.toThrow(/HF_API_KEY is missing/);
     process.env = before;
   });
-  it("cascades to the next trending model when the first one fails, by question kind", async () => {
+  it("cascades to the fallback model when Qwen3.8-27B fails, by question kind", async () => {
     const before = { ...process.env };
     process.env.HF_API_KEY = "hf_test_token";
     const { callSynthesisLLM } = await import("./research");
@@ -110,12 +110,12 @@ describe("single synthesis backend", () => {
     globalThis.fetch = (async (_url: any, init: any) => {
       const body = JSON.parse(init.body);
       seen.push(body.model);
-      if (body.model === "deepseek-ai/DeepSeek-V4-Flash-0731") return new Response("boom", { status: 503 });
+      if (body.model === "Qwen/Qwen3.8-27B") return new Response("boom", { status: 503 });
       return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 });
     }) as any;
     const result = await callSynthesisLLM({ messages: [{ role: "user", content: "code question" }] }, "code");
     globalThis.fetch = originalFetch;
-    expect(seen).toEqual(["deepseek-ai/DeepSeek-V4-Flash-0731", "zai-org/GLM-5.3"]);
+    expect(seen).toEqual(["Qwen/Qwen3.8-27B", "deepseek-ai/DeepSeek-V4-Flash-0731"]);
     expect(result.choices?.[0]?.message?.content).toBe("ok");
     process.env = before;
   });
@@ -133,7 +133,7 @@ describe("single synthesis backend", () => {
     globalThis.fetch = originalFetch;
     expect(calls[0].url).toBe("https://router.huggingface.co/v1/chat/completions");
     expect(calls[0].auth).toBe("Bearer hf_test_token");
-    expect(calls[0].body.model).toBe("zai-org/GLM-5.3-Flash");
+    expect(calls[0].body.model).toBe("Qwen/Qwen3.8-27B");
     expect(calls[0].body.messages[0].content[1].type).toBe("image_url");
     expect(result.choices?.[0]?.message?.content).toBe("ok");
     process.env = before;
