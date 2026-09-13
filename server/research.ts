@@ -156,63 +156,110 @@ export function scoreSource(hit: SearchHit, domain: string, relevance = 0): numb
 // ---------------------------------------------------------------------------
 // Single synthesis backend (like Perplexity: one model, no user-facing choice)
 //
-// Qwen/Qwen3.8-27B is served through Hugging Face Inference Providers. It is
-// not trained or hosted inside this web runtime; it is called as a remote
-// service with the only required secret being HF_API_KEY.
-// User-attached images are passed to it as vision input. If the key is absent
-// the call fails explicitly rather than substituting generated content.
+// Synthesis is provider-agnostic with an explicit fallback chain:
+//   1. Hugging Face Inference Providers (HF_API_KEY)
+//   2. Google Gemini OpenAI-compatible endpoint (GEMINI_API_KEY)
+//   3. Groq OpenAI-compatible endpoint (XAI_API_KEY or GROQ_API_KEY)
+// Every provider speaks the OpenAI chat-completions shape, so the pipeline
+// tries each configured provider in order and fails honestly only when none
+// is configured — no fabricated answers, ever.
 
-// Internal model routing (the user never picks a model — the pipeline picks one):
-// trending top HF models served through Inference Providers, with automatic cascade.
-const SYNTHESIS_ENDPOINT = "https://router.huggingface.co/v1/chat/completions";
-const SYNTHESIS_MODELS: Record<"vision" | "code" | "general", string[]> = {
-  vision: ["Qwen/Qwen3.8-27B", "zai-org/GLM-5.3-Flash"], // native image-text-to-text
-  code: ["Qwen/Qwen3.8-27B", "deepseek-ai/DeepSeek-V4-Flash-0731"], // technical/code answers
-  general: ["Qwen/Qwen3.8-27B", "zai-org/GLM-5.3"],
+type ProviderConfig = {
+  name: string;
+  endpoint: string;
+  apiKey: string;
+  models: Record<"vision" | "code" | "general", string[]>;
 };
 
+function synthesisProviders(): ProviderConfig[] {
+  const providers: ProviderConfig[] = [];
+  const hfKey = env("HF_API_KEY");
+  if (hfKey) {
+    providers.push({
+      name: "huggingface",
+      endpoint: "https://router.huggingface.co/v1/chat/completions",
+      apiKey: hfKey,
+      models: {
+        vision: ["Qwen/Qwen3.8-27B", "zai-org/GLM-5.3-Flash"],
+        code: ["Qwen/Qwen3.8-27B", "deepseek-ai/DeepSeek-V4-Flash-0731"],
+        general: ["Qwen/Qwen3.8-27B", "zai-org/GLM-5.3"],
+      },
+    });
+  }
+  const geminiKey = env("GEMINI_API_KEY");
+  if (geminiKey) {
+    providers.push({
+      name: "gemini",
+      endpoint: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+      apiKey: geminiKey,
+      models: {
+        vision: ["gemini-2.0-flash"],
+        code: ["gemini-2.0-flash"],
+        general: ["gemini-2.0-flash"],
+      },
+    });
+  }
+  const groqKey = env("XAI_API_KEY") || env("GROQ_API_KEY");
+  if (groqKey) {
+    providers.push({
+      name: "groq",
+      endpoint: "https://api.groq.com/openai/v1/chat/completions",
+      apiKey: groqKey,
+      models: {
+        vision: ["openai/gpt-oss-120b"],
+        code: ["openai/gpt-oss-120b"],
+        general: ["openai/gpt-oss-120b"],
+      },
+    });
+  }
+  return providers;
+}
+
 export function synthesisModelConfigured(): boolean {
-  return Boolean(env("HF_API_KEY"));
+  return synthesisProviders().length > 0;
 }
 
 export async function callSynthesisLLM(params: Parameters<typeof invokeLLM>[0], kind: "vision" | "code" | "general" = "general"): Promise<Awaited<ReturnType<typeof invokeLLM>>> {
-  const apiKey = env("HF_API_KEY");
-  if (!apiKey) throw new Error("Synthesis model is not configured: HF_API_KEY is missing. No answer was generated.");
-  const candidates = SYNTHESIS_MODELS[kind];
+  const providers = synthesisProviders();
+  if (!providers.length) {
+    throw new Error("Synthesis model is not configured: set HF_API_KEY, GEMINI_API_KEY, or XAI_API_KEY (Groq). No answer was generated.");
+  }
   const failures: string[] = [];
-  for (const model of candidates) {
-    try {
-      const res = await fetch(SYNTHESIS_ENDPOINT, {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({
-          model,
-          messages: params.messages,
-          temperature: model === "Qwen/Qwen3.8-27B" ? 0.7 : 0.2,
-          max_tokens: 4096,
-          ...(model === "Qwen/Qwen3.8-27B" ? { reasoning_effort: "low" } : {}),
-        }),
-        signal: AbortSignal.timeout(Math.max(timeoutMs, 120000)),
-      });
-      if (!res.ok) {
-        const detail = (await res.text().catch(() => "")).slice(0, 200);
-        failures.push(`${model} returned HTTP ${res.status}: ${detail}`);
-        continue;
+  for (const provider of providers) {
+    const candidates = provider.models[kind];
+    for (const model of candidates) {
+      try {
+        const res = await fetch(provider.endpoint, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${provider.apiKey}` },
+          body: JSON.stringify({
+            model,
+            messages: params.messages,
+            temperature: 0.3,
+            max_tokens: 4096,
+          }),
+          signal: AbortSignal.timeout(Math.max(timeoutMs, 120000)),
+        });
+        if (!res.ok) {
+          const detail = (await res.text().catch(() => "")).slice(0, 200);
+          failures.push(`${provider.name}/${model} returned HTTP ${res.status}: ${detail}`);
+          continue;
+        }
+        const data = (await res.json()) as Awaited<ReturnType<typeof invokeLLM>>;
+        const rawContent = data.choices?.[0]?.message?.content;
+        const content = typeof rawContent === "string" ? rawContent : Array.isArray(rawContent) ? rawContent.map((part) => typeof part === "string" ? part : "text" in part ? part.text : "").join("") : "";
+        if (!content.trim()) {
+          // Reasoning models can exhaust tokens on hidden reasoning and return null content — cascade instead of answering blank.
+          failures.push(`${provider.name}/${model} returned an empty answer (reasoning did not complete)`);
+          continue;
+        }
+        return data;
+      } catch (error) {
+        failures.push(`${provider.name}/${model}: ${error instanceof Error ? error.message : "request failed"}`);
       }
-      const data = (await res.json()) as Awaited<ReturnType<typeof invokeLLM>>;
-      const rawContent = data.choices?.[0]?.message?.content;
-      const content = typeof rawContent === "string" ? rawContent : Array.isArray(rawContent) ? rawContent.map((part) => typeof part === "string" ? part : "text" in part ? part.text : "").join("") : "";
-      if (!content.trim()) {
-        // Reasoning models can exhaust tokens on hidden reasoning and return null content — cascade instead of answering blank.
-        failures.push(`${model} returned an empty answer (reasoning did not complete)`);
-        continue;
-      }
-      return data;
-    } catch (error) {
-      failures.push(`${model}: ${error instanceof Error ? error.message : "request failed"}`);
     }
   }
-  throw new Error(`All synthesis models failed for this ${kind} question (${candidates.join(" -> ")}): ${failures.join("; ")}`);
+  throw new Error(`All synthesis providers failed for this ${kind} question: ${failures.join("; ")}`);
 }
 
 // Summarize page-fetch failures so operators can see WHY sources were dropped

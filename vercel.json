@@ -6,7 +6,7 @@
   "framework": null,
   "cleanUrls": true,
   "functions": {
-    "api/index.ts": {
+    "api/index.cjs": {
       "maxDuration": 60
     }
   },

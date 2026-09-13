@@ -93,17 +93,23 @@ describe("intent classification for direct technical answers", () => {
 });
 
 describe("single synthesis backend", () => {
-  it("fails explicitly when the HF_API_KEY secret is missing instead of fabricating an answer", async () => {
+  it("fails explicitly when no synthesis provider key is configured instead of fabricating an answer", async () => {
     const before = { ...process.env };
     delete process.env.HF_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.XAI_API_KEY;
+    delete process.env.GROQ_API_KEY;
     const { callSynthesisLLM, synthesisModelConfigured } = await import("./research");
     expect(synthesisModelConfigured()).toBe(false);
-    await expect(callSynthesisLLM({ messages: [{ role: "user", content: "hi" }] })).rejects.toThrow(/HF_API_KEY is missing/);
+    await expect(callSynthesisLLM({ messages: [{ role: "user", content: "hi" }] })).rejects.toThrow(/No answer was generated/);
     process.env = before;
   });
   it("cascades to the fallback model when Qwen3.8-27B fails, by question kind", async () => {
     const before = { ...process.env };
     process.env.HF_API_KEY = "hf_test_token";
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.XAI_API_KEY;
+    delete process.env.GROQ_API_KEY;
     const { callSynthesisLLM } = await import("./research");
     const originalFetch = globalThis.fetch;
     const seen: string[] = [];
@@ -122,6 +128,9 @@ describe("single synthesis backend", () => {
   it("calls the hardwired vision model and passes user images through as vision input", async () => {
     const before = { ...process.env };
     process.env.HF_API_KEY = "hf_test_token";
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.XAI_API_KEY;
+    delete process.env.GROQ_API_KEY;
     const { callSynthesisLLM } = await import("./research");
     const originalFetch = globalThis.fetch;
     const calls: Array<{ url: string; body: any; auth: string }> = [];
