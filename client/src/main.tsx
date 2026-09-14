@@ -65,8 +65,26 @@ async function runResearch(question: string, contextText?: string, imageUrls?: s
   if (!payload?.session || payload.session.status === "failed" || !payload.session.answer) {
     throw new Error(payload?.session?.error || "Research failed — no answer was produced.");
   }
+  // The Base44 function returns sources/claims at the top level; the session UI
+  // reads plan.evidence for the confidence bar and claim chips — synthesize it.
+  const stored = payload as unknown as {
+    sources?: Array<Record<string, unknown>>;
+    session?: { plan?: Record<string, unknown> };
+  };
+  const session = stored.session ?? {};
+  session.plan = { ...(session.plan ?? {}), ...(session.plan?.evidence ? {} : {
+    evidence: (stored.sources ?? []).slice(0, 8).map((s) => ({
+      title: (s.title as string) || (s.domain as string) || "Source",
+      claim: (s.title as string) || "",
+      quote: String(s.content ?? s.title ?? "").replace(/\s+/g, " ").slice(0, 240),
+      supportScore: (s.qualityScore as number) || 70,
+      qualityScore: (s.qualityScore as number) || 70,
+      url: (s.url as string) || "",
+      domain: (s.domain as string) || "",
+    })),
+  }) };
   const id = researchNextId++;
-  researchCache.set(id, payload as Record<string, unknown>);
+  researchCache.set(id, stored as unknown as Record<string, unknown>);
   return id;
 }
 
@@ -101,7 +119,7 @@ function researchTrpcFetch(input: RequestInfo | URL, init?: RequestInit): Promis
   let procedures: string[] = [];
   let inputList: unknown[] = [];
   try {
-    const parsedUrl = new URL(url);
+    const parsedUrl = new URL(url, typeof window !== "undefined" ? window.location.href : "http://localhost/");
     const trpcSegment = parsedUrl.pathname.indexOf("/api/trpc/") >= 0 ? "/api/trpc/" : "/trpc/";
     const procPath = parsedUrl.pathname.split(trpcSegment)[1] ?? "";
     procedures = procPath.split(",").map((p) => p.trim()).filter(Boolean);
