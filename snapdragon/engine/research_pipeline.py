@@ -26,7 +26,7 @@ from urllib.parse import urljoin, urlparse
 
 from evidence_ranker import OnDeviceEmbedder
 from qnn_runtime import RuntimeStatus, resolve_execution_provider
-from synthesizer import OnDeviceSynthesizer
+from synthesizer import OnDeviceSynthesizer, SynthesisMemory, synthesize_with_retry
 
 WIKIPEDIA_SEARCH = "https://en.wikipedia.org/w/api.php"
 WIKIPEDIA_EXTRACT = "https://en.wikipedia.org/w/api.php"
@@ -36,8 +36,6 @@ BLOCKED_HOSTS = ("localhost", "127.", "0.0.0.0", "10.", "192.168.", "169.254.")
 
 def is_public_http(url: str) -> bool:
     """Reject private-network targets, same rule as the cloud path."""
-    if url.startswith("http://") and not url.startswith("http://localhost"):
-        pass
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         return False
@@ -94,10 +92,12 @@ class LocalResearchPipeline:
         synthesizer: OnDeviceSynthesizer,
         embedder: OnDeviceEmbedder | None = None,
         tokenizer=None,
+        memory: SynthesisMemory | None = None,
     ):
         self.synthesizer = synthesizer
         self.embedder = embedder
         self.tokenizer = tokenizer
+        self.memory = memory or SynthesisMemory()
         self.status: RuntimeStatus = resolve_execution_provider()
         self.stages: list[PipelineStage] = []
 
@@ -201,15 +201,31 @@ class LocalResearchPipeline:
                 PipelineStage("semantic_rerank", "skipped", "no embedder configured")
             )
 
-        # 5-6. on-device cited synthesis + audit
-        result = self.synthesizer.synthesize(question, passages, stream_callback=on_token)
+        # 5-6. on-device cited synthesis + audit + self-correcting retry loop
+        result = synthesize_with_retry(
+            self.synthesizer,
+            question,
+            passages,
+            memory=self.memory,
+            stream_callback=on_token,
+        )
         self.stages.append(
             PipelineStage(
                 "on_device_synthesis",
                 "ok" if result["audit_passed"] else "failed",
-                f"{result['tokens_generated']} tokens via {result['provider']}",
+                f"{result['tokens_generated']} tokens via {result['provider']}"
+                + (f" (passed on attempt {result.get('attempts', 1)})" if result["audit_passed"] else ""),
             )
         )
+        stats = self.memory.stats()
+        if stats["runs"]:
+            self.stages.append(
+                PipelineStage(
+                    "on_device_learning",
+                    "ok",
+                    f"{stats['runs']} runs on this device, {stats['pass_rate']}% audit pass-rate",
+                )
+            )
 
         return ResearchResult(
             question=question,

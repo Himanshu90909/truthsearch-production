@@ -94,3 +94,13 @@ Same code, CPU execution provider, identical outputs, lower speed. The pipeline 
 ## Relationship to the web app
 
 `server/research.ts` remains the cloud engine for the hosted deployment. The Vercel/Base44 frontend can call a local Snapdragon bridge (same request/response shape) when running on a Windows-on-Snapdragon device — the `provider` field in the response distinguishes `QNN_HTP` from cloud providers, and the UI badge renders it.
+
+## On-device learning loop (added)
+
+The synthesizer now *trains its process* on your machine — model weights stay frozen NPU artifacts, but:
+
+- **Self-correcting retries:** if the citation audit rejects an answer (dangling `[n]` or no citations), the pipeline feeds the exact failure back into the next prompt and retries up to 3 times, escalating temperature 0.2 → 0.35 → 0.5.
+- **Persistent memory:** every run is recorded in `engine/synthesis_learning.json` (rolling 200-run window). Future runs start from the temperature that has the best audit pass-rate on this device, and the sidebar/stage log reports the running pass-rate.
+- This mirrors the web app's feedback bandit: on-device, the reward signal is the citation audit itself.
+
+Verified with the pure-logic test suite (audit, retry escalation, persistence across sessions). Run `python run_demo.py` on the Omnibook to see the `on_device_learning` stage live.
