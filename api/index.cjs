@@ -1096,6 +1096,29 @@ function providersForIntent(intent) {
 var env2 = (key) => process.env[key]?.trim();
 var maxQueries = Math.min(Number(env2("MAX_SEARCH_QUERIES") || 8), 20);
 var maxSources = Math.min(Number(env2("MAX_SOURCES") || 24), 50);
+var RESEARCH_MODES = ["quick", "deep", "academic", "verify"];
+var MODE_CONFIG = {
+  quick: { academicQueries: false, sourceCap: 12, evidenceCap: 8, label: "Quick search" },
+  deep: { academicQueries: true, sourceCap: 36, evidenceCap: 14, label: "Deep research" },
+  academic: { academicQueries: true, sourceCap: 24, evidenceCap: 12, label: "Academic research" },
+  verify: { academicQueries: true, sourceCap: 24, evidenceCap: 12, label: "Fact verification" }
+};
+function buildModeQueries(question, mode) {
+  const clean = question.trim();
+  const base = makeQueries(clean, MODE_CONFIG[mode].academicQueries);
+  if (mode === "verify") return Array.from(/* @__PURE__ */ new Set([clean, `${clean} \u2014 is it true?`, `${clean} fact check evidence`, `${clean} limitations and disagreement`, ...base])).filter(Boolean).slice(0, maxQueries);
+  if (mode === "deep") return Array.from(/* @__PURE__ */ new Set([...base, `${clean} recent developments`, `${clean} criticisms and limitations`])).slice(0, maxQueries);
+  return base;
+}
+function classifyClaimStatuses(evidence, conflicts) {
+  const statuses = evidence.map((e) => e.supportScore >= 75 && e.qualityScore >= 50 ? "verified" : "partial");
+  const flagged = /* @__PURE__ */ new Set();
+  for (const conflict of conflicts) for (const item of [...conflict.supporting || [], ...conflict.contradicting || []]) flagged.add(item.quote);
+  evidence.forEach((e, i) => {
+    if (flagged.has(e.quote)) statuses[i] = "conflicting";
+  });
+  return statuses;
+}
 var timeoutMs2 = Math.min(Number(env2("RESEARCH_TIMEOUT_MS") || 15e3), 3e4);
 function canonicalizeUrl(raw) {
   const u = new URL(raw);
@@ -1481,7 +1504,7 @@ function extractEvidence(question, sources) {
   const scores = bm25Like(question, all.map((x) => x.quote));
   return all.map((x, i) => ({ claim: x.quote.split(/[.!?]/)[0].trim(), quote: x.quote, url: x.source.canonicalUrl, title: x.source.title, supportScore: Math.min(96, 48 + scores[i] * 8), qualityScore: x.source.qualityScore, sourceId: x.sourceId })).filter((x) => x.supportScore >= 56).sort((a, b) => b.supportScore + b.qualityScore - (a.supportScore + a.qualityScore)).slice(0, 12);
 }
-async function conductResearch(question, onProgress, userAttachments) {
+async function conductResearch(question, onProgress, userAttachments, mode = "quick") {
   if (question.trim().length < 8 || question.length > 1200) throw new Error("Question must be between 8 and 1,200 characters.");
   const requested = env2("SEARCH_PROVIDER");
   const paidEnabled = env2("ENABLE_PAID_SEARCH") === "true";
@@ -1490,10 +1513,11 @@ async function conductResearch(question, onProgress, userAttachments) {
   const intent = classifyIntent(question);
   const extraProviders = providersForIntent(intent);
   onProgress({ stage: "planning", detail: `Bounded research plan created for ${intent.replace("_", " ")} intent`, at: Date.now() });
-  const queries = makeQueries(question, true);
+  const modeCfg = MODE_CONFIG[mode];
+  const queries = buildModeQueries(question, mode).slice(0, maxQueries);
   onProgress({ stage: "searching", detail: `Running ${queries.length} live searches across ${primary}, ${academic}, and ${extraProviders.join(", ")}`, at: Date.now() });
   const freeAcademic = [academic, "openalex", "europePmc", "crossref"];
-  const planned = queries.map((q, i) => ({ q, provider: i === 0 ? primary : i < 6 ? freeAcademic[(i - 1) % freeAcademic.length] : extraProviders[(i - 6) % Math.max(extraProviders.length, 1)] || "wikidata" }));
+  const planned = queries.map((q, i) => ({ q, provider: mode === "academic" ? freeAcademic[i % freeAcademic.length] : i === 0 ? primary : i < 6 ? freeAcademic[(i - 1) % freeAcademic.length] : extraProviders[(i - 6) % Math.max(extraProviders.length, 1)] || "wikidata" }));
   const settled = await Promise.allSettled(planned.map(({ q, provider }) => searchProvider(provider, q)));
   const failures = settled.filter((x) => x.status === "rejected").map((x) => x.reason instanceof Error ? x.reason.message : "Provider failed");
   if (failures.length) onProgress({ stage: "provider-warning", detail: `${failures.length} provider request(s) unavailable; continuing only with completed live results`, at: Date.now() });
@@ -1505,7 +1529,7 @@ async function conductResearch(question, onProgress, userAttachments) {
     } catch {
       return [x.url, x];
     }
-  })).values()).slice(0, maxSources);
+  })).values()).slice(0, Math.min(modeCfg.sourceCap, maxSources));
   onProgress({ stage: "fetching", detail: `Fetched ${unique.length} unique live search results; normalizing permitted public pages`, at: Date.now() });
   const fetchFailures = [];
   const sources = (await Promise.all(unique.map((hit) => fetchReadable(hit, question, fetchFailures)))).filter(Boolean);
@@ -1516,8 +1540,9 @@ async function conductResearch(question, onProgress, userAttachments) {
   const denseScores = await denseRank(question, evidence.map((e) => e.quote));
   const rerankScores = await crossEncoderRank(question, evidence.map((e) => e.quote));
   evidence = rankEvidence(evidence, denseScores, rerankScores);
-  evidence = verifyEvidence(evidence, sources);
+  evidence = verifyEvidence(evidence, sources).slice(0, modeCfg.evidenceCap);
   const conflicts = detectContradictions(evidence);
+  const claimStatuses = classifyClaimStatuses(evidence, conflicts);
   if (!evidence.length) onProgress({ stage: "fetch-warning", detail: "Citation verification found no usable passages. The model will answer from its own knowledge, clearly labeled.", at: Date.now() });
   onProgress({ stage: "verifying", detail: `Verified ${evidence.length} exact passage citations${conflicts.length ? "; detected mixed evidence" : ""}`, at: Date.now() });
   const context = evidence.length ? evidence.map((e, i) => `[${i + 1}] ${e.quote} (Source: ${e.title} \u2014 ${e.url})`).join("\n") : "(No usable web evidence was retrieved.)";
@@ -1533,7 +1558,7 @@ ${userAttachments.contextText.slice(0, 6e4)}` : "";
 Verified evidence:
 ${context}
 
-${technicalQuestion ? "This is a technical question. Answer it directly, completely, and practically from your own expertise: explain the concept, give concrete examples, and where useful include correct, runnable code. Use the retrieved evidence only where it genuinely helps, citing it with [n]; otherwise answer without citations.\n\n" : ""}${fromKnowledgeOnly ? "The retrieved web evidence is empty, so answer entirely from your own knowledge. Do NOT use [n] citations at all \u2014 there are no sources to cite.\n\n" : ""}Write a research answer with exactly these sections, in this order:
+${technicalQuestion ? "This is a technical question. Answer it directly, completely, and practically from your own expertise: explain the concept, give concrete examples, and where useful include correct, runnable code. Use the retrieved evidence only where it genuinely helps, citing it with [n]; otherwise answer without citations.\n\n" : ""}${fromKnowledgeOnly ? "The retrieved web evidence is empty, so answer entirely from your own knowledge. Do NOT use [n] citations at all \u2014 there are no sources to cite.\n\n" : ""}${mode === "verify" ? "This is a fact-verification request. In the Direct answer, state a clear verdict: confirmed by evidence / partially confirmed / not supported by the retrieved evidence, then quote the decisive passages with [n] and compare what different sources say.\n\n" : ""}Write a research answer with exactly these sections, in this order:
 
 ## Direct answer
 2-4 sentences that directly answer the question${evidence.length ? ", with inline [n] citations" : ""}.
@@ -1567,19 +1592,19 @@ ${answer}` : answer;
   onProgress({ stage: "completed", detail: evidence.length ? `Citations verified against retrieved URLs (${answerProvenance === "technical_direct" ? "technical question \u2014 answered with model expertise plus evidence" : "evidence-backed"})` : "Answered from model knowledge (labeled)", at: Date.now() });
   const citedSourceIds = new Set(evidence.map((e) => e.sourceId));
   const citedSources = sources.filter((_, sourceId) => citedSourceIds.has(sourceId));
-  return { answer: finalAnswer, plan: { question, queries, providers: Array.from(new Set(planned.map((x) => x.provider))), bounded: true, evidence, conflicts, citationAudit, answerProvenance }, sources: citedSources, evidence, conflicts, citationAudit, progress: [] };
+  return { answer: finalAnswer, plan: { question, queries, mode, modeLabel: modeCfg.label, claimStatuses, claimSummary: { verified: claimStatuses.filter((x) => x === "verified").length, partial: claimStatuses.filter((x) => x === "partial").length, conflicting: claimStatuses.filter((x) => x === "conflicting").length, insufficient: evidence.length ? 0 : 1 }, providers: Array.from(new Set(planned.map((x) => x.provider))), bounded: true, evidence, conflicts, citationAudit, answerProvenance }, sources: citedSources, evidence, conflicts, citationAudit, progress: [] };
 }
 
 // server/routers.ts
 var questionInput = import_zod2.z.object({ question: import_zod2.z.string().trim().min(8).max(1200) });
 var SYNC_RESEARCH = process.env.SYNC_RESEARCH ? process.env.SYNC_RESEARCH === "true" : process.env.VERCEL === "1";
-async function runResearch(id, question, userAttachments) {
+async function runResearch(id, question, userAttachments, mode) {
   try {
     await updateSession(id, { status: "researching" });
     await addMessage(id, "system", "Research started. Progress reflects completed backend actions only.");
     const result = await conductResearch(question, (progress) => {
       void addMessage(id, "system", `${progress.stage}: ${progress.detail}`);
-    }, userAttachments);
+    }, userAttachments, mode);
     for (const q of result.plan.queries) await addQuery(id, q, result.plan.providers.join(" + "), "searched", result.sources.length);
     const sourceIds = [];
     const passageIds = [];
@@ -1631,13 +1656,13 @@ var appRouter = router({
       }));
       return checks;
     }),
-    plan: publicProcedure.input(questionInput).query(({ input }) => {
+    plan: publicProcedure.input(import_zod2.z.object({ question: questionInput.shape.question, mode: import_zod2.z.enum(RESEARCH_MODES).default("quick") })).query(({ input }) => {
       const intent = classifyIntent(input.question);
-      return { queries: makeQueries(input.question, true), intent, providers: providersForIntent(intent), bounded: true, maxRounds: Number(process.env.MAX_RESEARCH_ROUNDS || 3) };
+      return { queries: buildModeQueries(input.question, input.mode), mode: input.mode, intent, providers: providersForIntent(intent), bounded: true, maxRounds: Number(process.env.MAX_RESEARCH_ROUNDS || 3) };
     }),
-    start: publicProcedure.input(import_zod2.z.object({ question: import_zod2.z.string().trim().min(8).max(1200), contextText: import_zod2.z.string().max(6e4).optional(), imageUrls: import_zod2.z.array(import_zod2.z.string().url().max(600)).max(4).optional() })).mutation(async ({ input, ctx }) => {
+    start: publicProcedure.input(import_zod2.z.object({ question: import_zod2.z.string().trim().min(8).max(1200), mode: import_zod2.z.enum(RESEARCH_MODES).default("quick"), contextText: import_zod2.z.string().max(6e4).optional(), imageUrls: import_zod2.z.array(import_zod2.z.string().url().max(600)).max(4).optional() })).mutation(async ({ input, ctx }) => {
       const id = await createSession(input.question, ctx.user?.id);
-      const research = runResearch(id, input.question, { contextText: input.contextText, imageUrls: input.imageUrls });
+      const research = runResearch(id, input.question, { contextText: input.contextText, imageUrls: input.imageUrls }, input.mode);
       if (SYNC_RESEARCH) await research;
       else void research;
       return { id };
@@ -1702,7 +1727,7 @@ ${existing.session.answer.slice(0, 3e4)}` : "";
 Follow-up question: ${input.question}${context}`;
       const newId = await createSession(`${existing.session.question}
 Follow-up: ${input.question}`, ctx.user?.id);
-      const research = runResearch(newId, followUpQuestion);
+      const research = runResearch(newId, followUpQuestion, void 0, existing.session.plan?.mode || "quick");
       if (SYNC_RESEARCH) await research;
       else void research;
       return { id: newId };

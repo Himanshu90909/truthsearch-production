@@ -176,3 +176,26 @@ button,input { font: inherit; } button,a { cursor: pointer; } button:focus-visib
   .answer-copy table { display:block; overflow-x:auto; max-width:100%; }
   .answer-copy pre { max-width:100%; overflow-x:auto; }
 }
+
+/* ── SaaS upgrade slice: research modes, claim statuses, report export, history ── */
+.mode-chips { display:flex; flex-wrap:wrap; gap:7px; margin-top:10px; padding-top:10px; border-top:1px solid #eee8ef; }
+.mode-chip { padding:7px 11px; border:1px solid #e3dce6; border-radius:999px; color:#796d82; background:rgba(255,255,255,.45); font:500 10px 'DM Mono',monospace; text-transform:uppercase; letter-spacing:.07em; }
+.mode-chip:hover { border-color:#c3b3cc; color:#5d5067; }
+.mode-chip.active { color:#fff; background:#665773; border-color:#665773; }
+.app.dark .mode-chip { background:rgba(255,255,255,.04); border-color:#3d3745; color:#b9afc4; }
+.app.dark .mode-chip.active { background:#8b7a9c; border-color:#8b7a9c; color:#fff; }
+.claim-status { display:inline-flex; align-items:center; gap:5px; flex:0 0 auto; font:10px 'DM Mono',monospace; text-transform:uppercase; }
+.claim-status.verified { color:#548d7d; }
+.claim-status.partial { color:#a08a4a; }
+.claim-status.conflicting { color:#a34e55; }
+.claim-status.insufficient { color:#94869c; }
+.export-report { display:inline-flex; align-items:center; gap:7px; margin-left:12px; padding:8px 13px; border:1px solid #e3dce6; border-radius:9px; color:#6d5f78; background:rgba(255,255,255,.6); font:500 10px 'DM Mono',monospace; text-transform:uppercase; letter-spacing:.07em; }
+.export-report:hover { border-color:#b9a7c4; color:#4c3f58; }
+.app.dark .export-report { border-color:#43394f; color:#c5b9cf; background:rgba(255,255,255,.03); }
+.history-list { display:grid; gap:6px; }
+.history-item { display:grid; gap:3px; padding:10px 11px; border:1px solid #eee8ef; border-radius:9px; background:rgba(255,255,255,.5); text-align:left; }
+.history-item:hover { border-color:#c9b9d2; }
+.history-item strong { font-size:12px; color:#4c4154; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.history-item small { font:10px 'DM Mono',monospace; text-transform:uppercase; color:#94869c; }
+.app.dark .history-item { background:rgba(255,255,255,.03); border-color:#3d3745; }
+.app.dark .history-item strong { color:#d8cfe0; }

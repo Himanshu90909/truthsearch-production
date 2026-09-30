@@ -11,6 +11,34 @@ export type EvidenceRecord = { claim: string; quote: string; url: string; title:
 const env = (key: string) => process.env[key]?.trim();
 const maxQueries = Math.min(Number(env("MAX_SEARCH_QUERIES") || 8), 20);
 const maxSources = Math.min(Number(env("MAX_SOURCES") || 24), 50);
+
+// Research modes (user-selectable, master-prompt slice: Quick / Deep / Academic / Verify).
+export const RESEARCH_MODES = ["quick", "deep", "academic", "verify"] as const;
+export type ResearchMode = (typeof RESEARCH_MODES)[number];
+export const MODE_CONFIG: Record<ResearchMode, { academicQueries: boolean; sourceCap: number; evidenceCap: number; label: string }> = {
+  quick: { academicQueries: false, sourceCap: 12, evidenceCap: 8, label: "Quick search" },
+  deep: { academicQueries: true, sourceCap: 36, evidenceCap: 14, label: "Deep research" },
+  academic: { academicQueries: true, sourceCap: 24, evidenceCap: 12, label: "Academic research" },
+  verify: { academicQueries: true, sourceCap: 24, evidenceCap: 12, label: "Fact verification" },
+};
+
+export function buildModeQueries(question: string, mode: ResearchMode): string[] {
+  const clean = question.trim();
+  const base = makeQueries(clean, MODE_CONFIG[mode].academicQueries);
+  if (mode === "verify") return Array.from(new Set([clean, `${clean} — is it true?`, `${clean} fact check evidence`, `${clean} limitations and disagreement`, ...base])).filter(Boolean).slice(0, maxQueries);
+  if (mode === "deep") return Array.from(new Set([...base, `${clean} recent developments`, `${clean} criticisms and limitations`])).slice(0, maxQueries);
+  return base;
+}
+
+// Claim-level evidence status (master-prompt slice: verified / partial / conflicting / insufficient).
+export type ClaimStatus = "verified" | "partial" | "conflicting" | "insufficient";
+export function classifyClaimStatuses(evidence: EvidenceRecord[], conflicts: ReturnType<typeof detectContradictions>): ClaimStatus[] {
+  const statuses: ClaimStatus[] = evidence.map((e) => e.supportScore >= 75 && e.qualityScore >= 50 ? "verified" : "partial");
+  const flagged = new Set<string>();
+  for (const conflict of conflicts) for (const item of [...(conflict.supporting || []), ...(conflict.contradicting || [])]) flagged.add(item.quote);
+  evidence.forEach((e, i) => { if (flagged.has(e.quote)) statuses[i] = "conflicting"; });
+  return statuses;
+}
 const timeoutMs = Math.min(Number(env("RESEARCH_TIMEOUT_MS") || 15000), 30000);
 
 export function canonicalizeUrl(raw: string): string {
@@ -386,7 +414,7 @@ function extractEvidence(question: string, sources: SourceRecord[]): EvidenceRec
 
 export type UserAttachments = { contextText?: string; imageUrls?: string[] };
 
-export async function conductResearch(question: string, onProgress: (p: ResearchProgress) => void, userAttachments?: UserAttachments) {
+export async function conductResearch(question: string, onProgress: (p: ResearchProgress) => void, userAttachments?: UserAttachments, mode: ResearchMode = "quick") {
   if (question.trim().length < 8 || question.length > 1200) throw new Error("Question must be between 8 and 1,200 characters.");
   const requested = env("SEARCH_PROVIDER");
   const paidEnabled = env("ENABLE_PAID_SEARCH") === "true";
@@ -395,20 +423,21 @@ export async function conductResearch(question: string, onProgress: (p: Research
   const intent = classifyIntent(question);
   const extraProviders = providersForIntent(intent) as ProviderName[];
   onProgress({ stage: "planning", detail: `Bounded research plan created for ${intent.replace("_", " ")} intent`, at: Date.now() });
-  const queries = makeQueries(question, true);
+  const modeCfg = MODE_CONFIG[mode];
+  const queries = buildModeQueries(question, mode).slice(0, maxQueries);
   onProgress({ stage: "searching", detail: `Running ${queries.length} live searches across ${primary}, ${academic}, and ${extraProviders.join(", ")}`, at: Date.now() });
   const freeAcademic = [academic, "openalex", "europePmc", "crossref"] as ProviderName[];
   // Only the bare/raw question (queries[0], no generic filler appended) goes to the general-web
   // primary provider — Wikipedia's fuzzy full-text search treats extra filler words as additional
   // OR-matched terms and drifts toward unrelated pages that happen to contain them. Filler-suffixed
   // variants are routed to academic providers instead, where that phrasing is actually meaningful.
-  const planned = queries.map((q, i) => ({ q, provider: i === 0 ? primary : i < 6 ? freeAcademic[(i - 1) % freeAcademic.length] : extraProviders[(i - 6) % Math.max(extraProviders.length, 1)] || "wikidata" }));
+  const planned = queries.map((q, i) => ({ q, provider: mode === "academic" ? freeAcademic[i % freeAcademic.length] : i === 0 ? primary : i < 6 ? freeAcademic[(i - 1) % freeAcademic.length] : extraProviders[(i - 6) % Math.max(extraProviders.length, 1)] || "wikidata" }));
   const settled = await Promise.allSettled(planned.map(({ q, provider }) => searchProvider(provider, q)));
   const failures = settled.filter((x): x is PromiseRejectedResult => x.status === "rejected").map((x) => x.reason instanceof Error ? x.reason.message : "Provider failed");
   if (failures.length) onProgress({ stage: "provider-warning", detail: `${failures.length} provider request(s) unavailable; continuing only with completed live results`, at: Date.now() });
   const hits = settled.filter((x): x is PromiseFulfilledResult<SearchHit[]> => x.status === "fulfilled").flatMap((x) => x.value);
   if (!hits.length) onProgress({ stage: "provider-warning", detail: `All live providers were unavailable (${failures.join("; ") || "no results"}). The model will answer from its own knowledge, clearly labeled.`, at: Date.now() });
-  const unique = Array.from(new Map(hits.filter((x) => x.url).map((x) => { try { return [canonicalizeUrl(x.url), x] as const; } catch { return [x.url, x] as const; } })).values()).slice(0, maxSources);
+  const unique = Array.from(new Map(hits.filter((x) => x.url).map((x) => { try { return [canonicalizeUrl(x.url), x] as const; } catch { return [x.url, x] as const; } })).values()).slice(0, Math.min(modeCfg.sourceCap, maxSources));
   onProgress({ stage: "fetching", detail: `Fetched ${unique.length} unique live search results; normalizing permitted public pages`, at: Date.now() });
   const fetchFailures: string[] = [];
   const sources = (await Promise.all(unique.map((hit) => fetchReadable(hit, question, fetchFailures)))).filter(Boolean) as SourceRecord[];
@@ -419,8 +448,9 @@ export async function conductResearch(question: string, onProgress: (p: Research
   const denseScores = await denseRank(question, evidence.map((e) => e.quote));
   const rerankScores = await crossEncoderRank(question, evidence.map((e) => e.quote));
   evidence = rankEvidence(evidence, denseScores, rerankScores);
-  evidence = verifyEvidence(evidence, sources);
+  evidence = verifyEvidence(evidence, sources).slice(0, modeCfg.evidenceCap);
   const conflicts = detectContradictions(evidence);
+  const claimStatuses = classifyClaimStatuses(evidence, conflicts);
   if (!evidence.length) onProgress({ stage: "fetch-warning", detail: "Citation verification found no usable passages. The model will answer from its own knowledge, clearly labeled.", at: Date.now() });
   onProgress({ stage: "verifying", detail: `Verified ${evidence.length} exact passage citations${conflicts.length ? "; detected mixed evidence" : ""}`, at: Date.now() });
   const context = evidence.length ? evidence.map((e, i) => `[${i + 1}] ${e.quote} (Source: ${e.title} — ${e.url})`).join("\n") : "(No usable web evidence was retrieved.)";
@@ -428,7 +458,7 @@ export async function conductResearch(question: string, onProgress: (p: Research
   const fromKnowledgeOnly = !evidence.length && !userAttachments?.contextText;
   const attachmentBlock = userAttachments?.contextText ? `\n\nUSER-PROVIDED DOCUMENT (context the question is about; NOT web evidence — never cite it with [n]):\n${userAttachments.contextText.slice(0, 60000)}` : "";
   const imageParts = (userAttachments?.imageUrls || []).map((url) => ({ type: "image_url" as const, image_url: { url } }));
-  const instruction = `Question: ${question}${attachmentBlock}\n\nVerified evidence:\n${context}\n\n${technicalQuestion ? "This is a technical question. Answer it directly, completely, and practically from your own expertise: explain the concept, give concrete examples, and where useful include correct, runnable code. Use the retrieved evidence only where it genuinely helps, citing it with [n]; otherwise answer without citations.\n\n" : ""}${fromKnowledgeOnly ? "The retrieved web evidence is empty, so answer entirely from your own knowledge. Do NOT use [n] citations at all — there are no sources to cite.\n\n" : ""}Write a research answer with exactly these sections, in this order:\n\n## Direct answer\n2-4 sentences that directly answer the question${evidence.length ? ", with inline [n] citations" : ""}.\n\n## Why it happens — analysis\nExplain the underlying causes, mechanisms, and context behind the answer, the way a knowledgeable person would explain it to a curious reader: what drives the phenomenon, how the pieces connect, and what it means in practice. Reason across the evidence instead of only restating quotes. Every factual statement from web research must cite [n].\n\n## Evidence and sources\nThe strongest retrieved evidence that supports the analysis, cited inline.\n\n## Conflicting evidence\nOnly if the retrieved sources disagree or the evidence is mixed; otherwise state that retrieved sources are consistent.\n\n## Limitations\nWhat the retrieved evidence cannot answer, and how current or complete it is.\n\n## Conclusion\n2-3 closing sentences with citations.\n\n## Suggested follow-up questions\nExactly three questions a reader would naturally ask next, one per line, each on its own as a list item.${imageParts.length ? " The user attached image(s) as visual context; describe what is relevant to the question and clearly separate what comes from the images versus the cited web evidence." : ""}`;
+  const instruction = `Question: ${question}${attachmentBlock}\n\nVerified evidence:\n${context}\n\n${technicalQuestion ? "This is a technical question. Answer it directly, completely, and practically from your own expertise: explain the concept, give concrete examples, and where useful include correct, runnable code. Use the retrieved evidence only where it genuinely helps, citing it with [n]; otherwise answer without citations.\n\n" : ""}${fromKnowledgeOnly ? "The retrieved web evidence is empty, so answer entirely from your own knowledge. Do NOT use [n] citations at all — there are no sources to cite.\n\n" : ""}${mode === "verify" ? "This is a fact-verification request. In the Direct answer, state a clear verdict: confirmed by evidence / partially confirmed / not supported by the retrieved evidence, then quote the decisive passages with [n] and compare what different sources say.\n\n" : ""}Write a research answer with exactly these sections, in this order:\n\n## Direct answer\n2-4 sentences that directly answer the question${evidence.length ? ", with inline [n] citations" : ""}.\n\n## Why it happens — analysis\nExplain the underlying causes, mechanisms, and context behind the answer, the way a knowledgeable person would explain it to a curious reader: what drives the phenomenon, how the pieces connect, and what it means in practice. Reason across the evidence instead of only restating quotes. Every factual statement from web research must cite [n].\n\n## Evidence and sources\nThe strongest retrieved evidence that supports the analysis, cited inline.\n\n## Conflicting evidence\nOnly if the retrieved sources disagree or the evidence is mixed; otherwise state that retrieved sources are consistent.\n\n## Limitations\nWhat the retrieved evidence cannot answer, and how current or complete it is.\n\n## Conclusion\n2-3 closing sentences with citations.\n\n## Suggested follow-up questions\nExactly three questions a reader would naturally ask next, one per line, each on its own as a list item.${imageParts.length ? " The user attached image(s) as visual context; describe what is relevant to the question and clearly separate what comes from the images versus the cited web evidence." : ""}`;
   const userMessageContent: any = imageParts.length ? [{ type: "text", text: instruction }, ...imageParts] : instruction;
   const response = await callSynthesisLLM({ messages: [{ role: "system", content: "You are a research analyst. You write answers that research like a search engine and explain like a teacher: direct, then causal — what happens, why it happens, and what it means. Every factual sentence that comes from the retrieved evidence must cite [n]. If the retrieved evidence does not answer part of the question, fill the gap from your own knowledge and mark those sentences inline with 'model knowledge' so the reader can tell what is sourced and what is not. If evidence conflicts, explicitly say evidence is mixed. Never invent URLs, sources, citations, or fake [n] references, and never present model-knowledge claims as cited facts. Do not reveal private reasoning." }, { role: "user", content: userMessageContent }] }, imageParts.length ? "vision" : technicalQuestion ? "code" : "general");
   const answer = typeof response.choices?.[0]?.message?.content === "string" ? response.choices[0].message.content : "The answer generator did not return usable content.";
@@ -441,5 +471,5 @@ export async function conductResearch(question: string, onProgress: (p: Research
   onProgress({ stage: "completed", detail: evidence.length ? `Citations verified against retrieved URLs (${answerProvenance === "technical_direct" ? "technical question — answered with model expertise plus evidence" : "evidence-backed"})` : "Answered from model knowledge (labeled)", at: Date.now() });
   const citedSourceIds = new Set(evidence.map((e) => e.sourceId));
   const citedSources = sources.filter((_, sourceId) => citedSourceIds.has(sourceId));
-  return { answer: finalAnswer, plan: { question, queries, providers: Array.from(new Set(planned.map((x) => x.provider))), bounded: true, evidence, conflicts, citationAudit, answerProvenance }, sources: citedSources, evidence, conflicts, citationAudit, progress: [] as ResearchProgress[] };
+  return { answer: finalAnswer, plan: { question, queries, mode, modeLabel: modeCfg.label, claimStatuses, claimSummary: { verified: claimStatuses.filter((x) => x === "verified").length, partial: claimStatuses.filter((x) => x === "partial").length, conflicting: claimStatuses.filter((x) => x === "conflicting").length, insufficient: evidence.length ? 0 : 1 }, providers: Array.from(new Set(planned.map((x) => x.provider))), bounded: true, evidence, conflicts, citationAudit, answerProvenance }, sources: citedSources, evidence, conflicts, citationAudit, progress: [] as ResearchProgress[] };
 }

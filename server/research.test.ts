@@ -148,3 +148,29 @@ describe("single synthesis backend", () => {
     process.env = before;
   });
 });
+
+describe("research modes (SaaS upgrade slice)", () => {
+  it("builds mode-specific query plans without fabricating templates beyond the cap", async () => {
+    const { buildModeQueries } = await import("./research");
+    const q = "Are retrieval-augmented models more factual than plain LLMs?";
+    const quick = buildModeQueries(q, "quick");
+    const deep = buildModeQueries(q, "deep");
+    const academic = buildModeQueries(q, "academic");
+    const verify = buildModeQueries(q, "verify");
+    expect(quick.length).toBeLessThan(deep.length);
+    expect(verify.some((x) => x.includes("is it true"))).toBe(true);
+    expect(academic.some((x) => /systematic review|empirical study/.test(x))).toBe(true);
+  });
+  it("classifies claim statuses: verified, partial, and conflicting", async () => {
+    const { classifyClaimStatuses } = await import("./research");
+    const evidence = [
+      { claim: "a", quote: "quote-a", url: "https://a.example", title: "A", supportScore: 88, qualityScore: 70, sourceId: 0 },
+      { claim: "b", quote: "quote-b", url: "https://b.example", title: "B", supportScore: 61, qualityScore: 40, sourceId: 1 },
+      { claim: "c", quote: "quote-c", url: "https://c.example", title: "C", supportScore: 90, qualityScore: 80, sourceId: 2 },
+    ];
+    const conflicts = [{ description: "mixed", supporting: [evidence[0]], contradicting: [evidence[2]] }];
+    const statuses = classifyClaimStatuses(evidence, conflicts);
+    expect(statuses).toEqual(["conflicting", "partial", "conflicting"]);
+    expect(classifyClaimStatuses(evidence, [])).toEqual(["verified", "partial", "verified"]);
+  });
+});
