@@ -8,6 +8,15 @@
 
 TruthSearch now has a fully on-device path for **Snapdragon-powered HP PCs** (Omnibook Ultra / Omnibook 3, Snapdragon X Elite / X2 Elite). The AI stack — semantic evidence reranking (all-MiniLM-L6-v2, w8a16) and cited synthesis (Llama-v3.2-3B-Instruct, w4a16), both from [Qualcomm AI Hub](https://aihub.qualcomm.com) — runs on the Hexagon NPU via the QNN execution provider. Same research boundary, same citation audit, zero cloud AI calls: questions and evidence never leave the device, and the demo runs fully offline. See [`snapdragon/README.md`](snapdragon/README.md) and the challenge submission in [`PROPOSAL.md`](PROPOSAL.md).
 
+## Research modes & evidence intelligence (SaaS upgrade — Sep 2026)
+
+- **Four research modes** selectable in the composer: **Quick search** (fast multi-source answer), **Deep research** (more queries, up to 36 sources), **Academic** (routes queries to scholarly providers — arXiv, OpenAlex, Europe PMC, Crossref), and **Verify a claim** (fact-check framing with a clear verdict: confirmed / partially confirmed / not supported by the retrieved evidence).
+- **Claim-level evidence statuses**: every extracted claim carries an explainable status — *Verified*, *Partially supported*, *Conflicting evidence*, or *Insufficient evidence* — computed from the passage support score, source quality score, and contradiction detection. The answer header shows a claim summary (`n verified · n partial · n conflicting`).
+- **PDF report export**: completed research can be exported as a printable report containing the answer, the full evidence trail with claim statuses, conflicting evidence, sources with quality scores, and the citation-audit summary. Uses the browser print pipeline (`Export report` → Print → Save as PDF).
+- **Workspace history**: the desktop sidebar now lists real past research sessions (previously a placeholder); click any entry to reopen it.
+- Mode-aware research plans are also surfaced in the plan preview endpoint (`research.plan` now accepts a `mode`), and follow-ups inherit the session's original research mode.
+- **Tests**: `buildModeQueries` (mode-specific bounded query planning) and `classifyClaimStatuses` (verified/partial/conflicting classification) are covered by automated tests — 26 tests passing.
+
 ## No-card operating mode
 
 The default web adapter is the public Wikipedia API and the default academic adapter is Semantic Scholar. These services may be rate-limited and are not a guarantee of broad web coverage, but they allow development and real queries without purchasing a search card. For stronger general-web coverage, configure Brave or Tavily using project secrets; if a selected paid provider is not configured, the session fails explicitly rather than falling back to fabricated data.
