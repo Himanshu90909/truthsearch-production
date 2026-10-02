@@ -8,6 +8,18 @@
 
 TruthSearch now has a fully on-device path for **Snapdragon-powered HP PCs** (Omnibook Ultra / Omnibook 3, Snapdragon X Elite / X2 Elite). The AI stack — semantic evidence reranking (all-MiniLM-L6-v2, w8a16) and cited synthesis (Llama-v3.2-3B-Instruct, w4a16), both from [Qualcomm AI Hub](https://aihub.qualcomm.com) — runs on the Hexagon NPU via the QNN execution provider. Same research boundary, same citation audit, zero cloud AI calls: questions and evidence never leave the device, and the demo runs fully offline. See [`snapdragon/README.md`](snapdragon/README.md) and the challenge submission in [`PROPOSAL.md`](PROPOSAL.md).
 
+## Startup infrastructure — accounts, collections, analytics (Oct 2026)
+
+TruthSearch now runs as a real product, not just a demo:
+
+- **Persistent accounts** — self-contained email + password sign-up/sign-in (scrypt hashing, per-user salt, revocable 30-day server-side sessions). No external auth service required. Signed-in users get cross-device research history; sessions are scoped to their owner server-side.
+- **Collections** — organize research into named collections from the sidebar (create, assign sessions, delete). Collections are per-account and their counts are queried with a real SQL join.
+- **Analytics events** — typed usage events (`research.started/completed/failed`, `account.registered`, …) with latency and source-count metadata, aggregated by an owner-only `admin.metrics` endpoint (authorized by admin role or `ADMIN_METRICS_TOKEN`).
+- **Usage guards** — sliding-window hourly rate limits on research runs (anonymous 8/h, signed-in 40/h) to protect provider quotas before monetization.
+- **Database migrations** — `drizzle/0002_*.sql` adds `local_sessions`, `collections`, `analytics_events`, plus `users.passwordHash` and `research_sessions.collectionId`. Run `pnpm db:push` when `DATABASE_URL` is set.
+
+See [`STARTUP.md`](STARTUP.md) for the full architecture map and the phased roadmap (research platform → learning system → business infrastructure → scale).
+
 ## Research modes & evidence intelligence (SaaS upgrade — Sep 2026)
 
 - **Four research modes** selectable in the composer: **Quick search** (fast multi-source answer), **Deep research** (more queries, up to 36 sources), **Academic** (routes queries to scholarly providers — arXiv, OpenAlex, Europe PMC, Crossref), and **Verify a claim** (fact-check framing with a clear verdict: confirmed / partially confirmed / not supported by the retrieved evidence).

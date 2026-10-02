@@ -76,6 +76,7 @@ var users = (0, import_mysql_core.mysqlTable)("users", {
   email: (0, import_mysql_core.varchar)("email", { length: 320 }),
   loginMethod: (0, import_mysql_core.varchar)("loginMethod", { length: 64 }),
   role: (0, import_mysql_core.mysqlEnum)("role", ["user", "admin"]).default("user").notNull(),
+  passwordHash: (0, import_mysql_core.text)("passwordHash"),
   createdAt: (0, import_mysql_core.timestamp)("createdAt").defaultNow().notNull(),
   updatedAt: (0, import_mysql_core.timestamp)("updatedAt").defaultNow().onUpdateNow().notNull(),
   lastSignedIn: (0, import_mysql_core.timestamp)("lastSignedIn").defaultNow().notNull()
@@ -89,6 +90,7 @@ var researchSessions = (0, import_mysql_core.mysqlTable)("research_sessions", {
   answer: (0, import_mysql_core.text)("answer"),
   plan: (0, import_mysql_core.json)("plan"),
   error: (0, import_mysql_core.text)("error"),
+  collectionId: (0, import_mysql_core.int)("collectionId"),
   createdAt: (0, import_mysql_core.timestamp)("createdAt").defaultNow().notNull(),
   updatedAt: (0, import_mysql_core.timestamp)("updatedAt").defaultNow().onUpdateNow().notNull()
 });
@@ -161,6 +163,26 @@ var researchCitations = (0, import_mysql_core.mysqlTable)("research_citations", 
   sourceId: (0, import_mysql_core.int)("sourceId").notNull(),
   verified: (0, import_mysql_core.int)("verified").notNull().default(0)
 });
+var localSessions = (0, import_mysql_core.mysqlTable)("local_sessions", {
+  id: (0, import_mysql_core.int)("id").autoincrement().primaryKey(),
+  token: (0, import_mysql_core.varchar)("token", { length: 128 }).notNull().unique(),
+  userId: (0, import_mysql_core.int)("userId").notNull(),
+  createdAt: (0, import_mysql_core.timestamp)("createdAt").defaultNow().notNull(),
+  expiresAt: (0, import_mysql_core.timestamp)("expiresAt").notNull()
+});
+var collections = (0, import_mysql_core.mysqlTable)("collections", {
+  id: (0, import_mysql_core.int)("id").autoincrement().primaryKey(),
+  userId: (0, import_mysql_core.int)("userId").notNull(),
+  name: (0, import_mysql_core.varchar)("name", { length: 120 }).notNull(),
+  createdAt: (0, import_mysql_core.timestamp)("createdAt").defaultNow().notNull()
+});
+var analyticsEvents = (0, import_mysql_core.mysqlTable)("analytics_events", {
+  id: (0, import_mysql_core.int)("id").autoincrement().primaryKey(),
+  userId: (0, import_mysql_core.int)("userId"),
+  type: (0, import_mysql_core.varchar)("type", { length: 64 }).notNull(),
+  meta: (0, import_mysql_core.json)("meta"),
+  createdAt: (0, import_mysql_core.timestamp)("createdAt").defaultNow().notNull()
+});
 
 // server/_core/env.ts
 var ENV = {
@@ -173,6 +195,37 @@ var ENV = {
   forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
   forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? ""
 };
+
+// server/auth-local.ts
+var import_node_crypto = require("node:crypto");
+var import_node_util = require("node:util");
+var scrypt = (0, import_node_util.promisify)(import_node_crypto.scrypt);
+var LOCAL_SESSION_COOKIE = "ts_local_session";
+var SESSION_TTL_MS = 1e3 * 60 * 60 * 24 * 30;
+var SCRYPT_KEYLEN = 64;
+async function hashPassword(password) {
+  const salt = (0, import_node_crypto.randomBytes)(16);
+  const key = await scrypt(password, salt, SCRYPT_KEYLEN);
+  return `scrypt:${salt.toString("hex")}:${key.toString("hex")}`;
+}
+async function verifyPassword(password, stored) {
+  const parts = stored.split(":");
+  if (parts.length !== 3 || parts[0] !== "scrypt") return false;
+  const salt = Buffer.from(parts[1], "hex");
+  const expected = Buffer.from(parts[2], "hex");
+  if (salt.length === 0 || expected.length === 0) return false;
+  const actual = await scrypt(password, salt, expected.length);
+  return (0, import_node_crypto.timingSafeEqual)(actual, expected);
+}
+function newSessionToken() {
+  return (0, import_node_crypto.randomBytes)(48).toString("base64url");
+}
+function normalizeEmail(email) {
+  return email.trim().toLowerCase();
+}
+function validateEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) && email.length <= 320;
+}
 
 // server/db.ts
 var _db = null;
@@ -227,7 +280,7 @@ async function createSession(question, userId) {
   if (!db) {
     const id = memId();
     const now = /* @__PURE__ */ new Date();
-    mem.sessions.set(id, { id, title: question.slice(0, 120), question, userId: userId ?? null, status: "queued", answer: null, plan: null, error: null, createdAt: now, updatedAt: now });
+    mem.sessions.set(id, { id, title: question.slice(0, 120), question, userId: userId ?? null, status: "queued", answer: null, plan: null, error: null, collectionId: null, createdAt: now, updatedAt: now });
     return id;
   }
   const result = await db.insert(researchSessions).values({ title: question.slice(0, 120), question, userId, status: "queued" });
@@ -311,10 +364,10 @@ async function addCitation(claimId, sourceId, verified) {
 async function listSessions(userId, limit = 30) {
   const db = await getDb();
   if (!db) {
-    return Array.from(mem.sessions.values()).filter((s) => userId ? s.userId === userId : true).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime()).slice(0, Math.min(Math.max(limit, 1), 100)).map((s) => ({ id: s.id, title: s.title, question: s.question, status: s.status, createdAt: s.createdAt, updatedAt: s.updatedAt }));
+    return Array.from(mem.sessions.values()).filter((s) => userId ? s.userId === userId : true).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime()).slice(0, Math.min(Math.max(limit, 1), 100)).map((s) => ({ id: s.id, title: s.title, question: s.question, status: s.status, collectionId: s.collectionId, createdAt: s.createdAt, updatedAt: s.updatedAt }));
   }
   const where = userId ? (0, import_drizzle_orm.eq)(researchSessions.userId, userId) : void 0;
-  return db.select({ id: researchSessions.id, title: researchSessions.title, question: researchSessions.question, status: researchSessions.status, createdAt: researchSessions.createdAt, updatedAt: researchSessions.updatedAt }).from(researchSessions).where(where).orderBy((0, import_drizzle_orm.desc)(researchSessions.updatedAt)).limit(Math.min(Math.max(limit, 1), 100));
+  return db.select({ id: researchSessions.id, title: researchSessions.title, question: researchSessions.question, status: researchSessions.status, collectionId: researchSessions.collectionId, createdAt: researchSessions.createdAt, updatedAt: researchSessions.updatedAt }).from(researchSessions).where(where).orderBy((0, import_drizzle_orm.desc)(researchSessions.updatedAt)).limit(Math.min(Math.max(limit, 1), 100));
 }
 async function getSession(id, userId) {
   const db = await getDb();
@@ -339,6 +392,156 @@ async function getSession(id, userId) {
   ]);
   const evidence = claims.length ? await db.select().from(researchEvidence).where((0, import_drizzle_orm.inArray)(researchEvidence.claimId, claims.map((claim) => claim.id))) : [];
   return { session, messages, queries, sources, claims, evidence };
+}
+var startupMem = {
+  users: /* @__PURE__ */ new Map(),
+  localSessions: /* @__PURE__ */ new Map(),
+  collections: [],
+  events: []
+};
+async function getUserByEmail(email) {
+  const db = await getDb();
+  if (!db) {
+    for (const user of Array.from(startupMem.users.values())) if (user.email === email) return user;
+    return void 0;
+  }
+  const result = await db.select().from(users).where((0, import_drizzle_orm.eq)(users.email, email)).limit(1);
+  return result[0];
+}
+async function createLocalUser(input) {
+  const db = await getDb();
+  if (!db) {
+    const now = /* @__PURE__ */ new Date();
+    const id = memId();
+    const user = { id, openId: `local:${input.email}`, name: input.name, email: input.email, passwordHash: input.passwordHash, role: "user", createdAt: now, updatedAt: now, lastSignedIn: now };
+    startupMem.users.set(id, user);
+    return user;
+  }
+  await db.insert(users).values({ openId: `local:${input.email}`, name: input.name, email: input.email, passwordHash: input.passwordHash, loginMethod: "password" });
+  const created = await getUserByEmail(input.email);
+  if (!created) throw new Error("Account creation failed.");
+  return created;
+}
+async function createLocalSession(userId) {
+  const token = newSessionToken();
+  const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+  const db = await getDb();
+  if (!db) {
+    startupMem.localSessions.set(token, { token, userId, createdAt: /* @__PURE__ */ new Date(), expiresAt });
+    return { token, expiresAt };
+  }
+  await db.insert(localSessions).values({ token, userId, expiresAt });
+  return { token, expiresAt };
+}
+async function getLocalUserByToken(token) {
+  const db = await getDb();
+  if (!db) {
+    const session2 = startupMem.localSessions.get(token);
+    if (!session2 || session2.expiresAt.getTime() < Date.now()) return void 0;
+    return startupMem.users.get(session2.userId);
+  }
+  const session = (await db.select().from(localSessions).where((0, import_drizzle_orm.eq)(localSessions.token, token)).limit(1))[0];
+  if (!session || session.expiresAt.getTime() < Date.now()) return void 0;
+  const user = (await db.select().from(users).where((0, import_drizzle_orm.eq)(users.id, session.userId)).limit(1))[0];
+  return user;
+}
+async function deleteLocalSession(token) {
+  const db = await getDb();
+  if (!db) {
+    startupMem.localSessions.delete(token);
+    return;
+  }
+  await db.delete(localSessions).where((0, import_drizzle_orm.eq)(localSessions.token, token));
+}
+async function createCollection(userId, name) {
+  const db = await getDb();
+  if (!db) {
+    const id = memId();
+    startupMem.collections.push({ id, userId, name, createdAt: /* @__PURE__ */ new Date() });
+    return id;
+  }
+  const result = await db.insert(collections).values({ userId, name });
+  return Number(result[0].insertId);
+}
+async function listCollections(userId) {
+  const db = await getDb();
+  if (!db) {
+    return startupMem.collections.filter((c) => c.userId === userId).map((c) => ({ id: c.id, name: c.name, createdAt: c.createdAt, sessionCount: Array.from(mem.sessions.values()).filter((s) => s.collectionId === c.id).length })).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  }
+  const rows = await db.select({ id: collections.id, name: collections.name, createdAt: collections.createdAt, sessionCount: import_drizzle_orm.sql`count(${researchSessions.id})` }).from(collections).leftJoin(researchSessions, (0, import_drizzle_orm.eq)(researchSessions.collectionId, collections.id)).where((0, import_drizzle_orm.eq)(collections.userId, userId)).groupBy(collections.id).orderBy((0, import_drizzle_orm.desc)(collections.createdAt));
+  return rows.map((r) => ({ ...r, sessionCount: Number(r.sessionCount) }));
+}
+async function deleteCollection(userId, collectionId) {
+  const db = await getDb();
+  if (!db) {
+    startupMem.collections = startupMem.collections.filter((c) => !(c.id === collectionId && c.userId === userId));
+    for (const s of Array.from(mem.sessions.values())) if (s.collectionId === collectionId) s.collectionId = null;
+    return;
+  }
+  await db.update(researchSessions).set({ collectionId: null }).where((0, import_drizzle_orm.eq)(researchSessions.collectionId, collectionId));
+  await db.delete(collections).where((0, import_drizzle_orm.and)((0, import_drizzle_orm.eq)(collections.id, collectionId), (0, import_drizzle_orm.eq)(collections.userId, userId)));
+}
+async function setSessionCollection(sessionId, userId, collectionId) {
+  const db = await getDb();
+  if (!db) {
+    const session2 = mem.sessions.get(sessionId);
+    if (!session2 || session2.userId !== userId) throw new Error("Research session not found.");
+    if (collectionId !== null && !startupMem.collections.some((c) => c.id === collectionId && c.userId === userId)) throw new Error("Collection not found.");
+    session2.collectionId = collectionId;
+    touch(session2);
+    return;
+  }
+  const session = (await db.select().from(researchSessions).where((0, import_drizzle_orm.and)((0, import_drizzle_orm.eq)(researchSessions.id, sessionId), (0, import_drizzle_orm.eq)(researchSessions.userId, userId))).limit(1))[0];
+  if (!session) throw new Error("Research session not found.");
+  if (collectionId !== null) {
+    const collection = (await db.select().from(collections).where((0, import_drizzle_orm.and)((0, import_drizzle_orm.eq)(collections.id, collectionId), (0, import_drizzle_orm.eq)(collections.userId, userId))).limit(1))[0];
+    if (!collection) throw new Error("Collection not found.");
+  }
+  await db.update(researchSessions).set({ collectionId }).where((0, import_drizzle_orm.eq)(researchSessions.id, sessionId));
+}
+async function recordEvent(type, userId, meta = null) {
+  const db = await getDb();
+  if (!db) {
+    startupMem.events.push({ id: memId(), userId, type, meta, createdAt: /* @__PURE__ */ new Date() });
+    return;
+  }
+  try {
+    await db.insert(analyticsEvents).values({ userId, type, meta });
+  } catch (error) {
+    console.warn("[Analytics] Failed to record event:", error);
+  }
+}
+async function eventMetrics(days = 30) {
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1e3);
+  const db = await getDb();
+  let rows;
+  if (!db) {
+    rows = startupMem.events.filter((e) => e.createdAt >= since);
+  } else {
+    rows = await db.select({ type: analyticsEvents.type, userId: analyticsEvents.userId, meta: analyticsEvents.meta, createdAt: analyticsEvents.createdAt }).from(analyticsEvents).where(import_drizzle_orm.sql`${analyticsEvents.createdAt} >= ${since}`).orderBy((0, import_drizzle_orm.desc)(analyticsEvents.createdAt)).limit(5e3);
+  }
+  const totals = /* @__PURE__ */ new Map();
+  const daily = /* @__PURE__ */ new Map();
+  let completed = 0, failed = 0, latencySum = 0, latencyCount = 0, totalSources = 0;
+  for (const row of rows) {
+    totals.set(row.type, (totals.get(row.type) || 0) + 1);
+    const day = row.createdAt.toISOString().slice(0, 10);
+    daily.set(day, (daily.get(day) || 0) + 1);
+    if (row.type === "research.completed") completed++;
+    if (row.type === "research.failed") failed++;
+    const latency = typeof row.meta?.latencyMs === "number" ? row.meta.latencyMs : null;
+    if (latency !== null) {
+      latencySum += latency;
+      latencyCount++;
+    }
+    if (typeof row.meta?.sources === "number") totalSources += row.meta.sources;
+  }
+  return {
+    totalsByType: Array.from(totals.entries()).map(([type, count]) => ({ type, count })).sort((a, b) => b.count - a.count),
+    daily: Array.from(daily.entries()).map(([date, count]) => ({ date, count })).sort((a, b) => a.date.localeCompare(b.date)),
+    research: { completed, failed, avgLatencyMs: latencyCount ? Math.round(latencySum / latencyCount) : null, totalSources },
+    recentEvents: rows.slice(0, 50)
+  };
 }
 
 // server/_core/cookies.ts
@@ -706,6 +909,8 @@ function registerStorageProxy(app) {
 
 // server/routers.ts
 var import_zod2 = require("zod");
+var import_server3 = require("@trpc/server");
+var import_cookie3 = require("cookie");
 
 // server/_core/systemRouter.ts
 var import_zod = require("zod");
@@ -1598,7 +1803,8 @@ ${answer}` : answer;
 // server/routers.ts
 var questionInput = import_zod2.z.object({ question: import_zod2.z.string().trim().min(8).max(1200) });
 var SYNC_RESEARCH = process.env.SYNC_RESEARCH ? process.env.SYNC_RESEARCH === "true" : process.env.VERCEL === "1";
-async function runResearch(id, question, userAttachments, mode) {
+async function runResearch(id, question, userId, userAttachments, mode) {
+  const startedAt = Date.now();
   try {
     await updateSession(id, { status: "researching" });
     await addMessage(id, "system", "Research started. Progress reflects completed backend actions only.");
@@ -1627,19 +1833,69 @@ async function runResearch(id, question, userAttachments, mode) {
     }
     await addMessage(id, "assistant", result.answer);
     await updateSession(id, { status: "completed", answer: result.answer, plan: result.plan });
+    void recordEvent("research.completed", userId, { latencyMs: Date.now() - startedAt, sources: result.sources.length, mode });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Research failed for an unknown reason.";
     await addMessage(id, "system", `failed: ${message}`);
     await updateSession(id, { status: "failed", error: message });
+    void recordEvent("research.failed", userId, { latencyMs: Date.now() - startedAt, error: message.slice(0, 200), mode });
   }
+}
+var RATE_WINDOW_MS = 60 * 60 * 1e3;
+var rateBuckets = /* @__PURE__ */ new Map();
+function checkRate(key, limit) {
+  const now = Date.now();
+  const hits = (rateBuckets.get(key) || []).filter((t2) => now - t2 < RATE_WINDOW_MS);
+  if (hits.length >= limit) {
+    rateBuckets.set(key, hits);
+    return false;
+  }
+  hits.push(now);
+  rateBuckets.set(key, hits);
+  if (rateBuckets.size > 5e3) rateBuckets.clear();
+  return true;
+}
+function rateKey(ctx) {
+  if (ctx.user) return `user:${ctx.user.id}`;
+  const forwarded = ctx.req.headers["x-forwarded-for"];
+  const ip = typeof forwarded === "string" ? forwarded.split(",")[0].trim() : "anonymous";
+  return `ip:${ip}`;
 }
 var appRouter = router({
   system: systemRouter,
   auth: router({
-    me: publicProcedure.query((opts) => opts.ctx.user),
+    me: publicProcedure.query((opts) => opts.ctx.user ? { id: opts.ctx.user.id, name: opts.ctx.user.name, email: opts.ctx.user.email, role: opts.ctx.user.role } : null),
+    register: publicProcedure.input(import_zod2.z.object({ email: import_zod2.z.string().trim().max(320), password: import_zod2.z.string().min(8).max(200), name: import_zod2.z.string().trim().min(1).max(80).optional() })).mutation(async ({ input, ctx }) => {
+      const email = normalizeEmail(input.email);
+      if (!validateEmail(email)) throw new Error("Enter a valid email address.");
+      if (await getUserByEmail(email)) throw new Error("An account with that email already exists \u2014 sign in instead.");
+      const passwordHash = await hashPassword(input.password);
+      const user = await createLocalUser({ email, name: input.name ?? email.split("@")[0], passwordHash });
+      const { token } = await createLocalSession(user.id);
+      const cookieOptions = getSessionCookieOptions(ctx.req);
+      ctx.res.cookie(LOCAL_SESSION_COOKIE, token, { ...cookieOptions, maxAge: SESSION_TTL_MS });
+      void recordEvent("account.registered", user.id, { domain: email.split("@")[1] ?? null });
+      return { user: { id: user.id, name: user.name, email: user.email, role: user.role } };
+    }),
+    login: publicProcedure.input(import_zod2.z.object({ email: import_zod2.z.string().trim().max(320), password: import_zod2.z.string().min(1).max(200) })).mutation(async ({ input, ctx }) => {
+      const email = normalizeEmail(input.email);
+      const user = await getUserByEmail(email);
+      if (!user || !user.passwordHash) throw new Error("Email or password is incorrect.");
+      if (!await verifyPassword(input.password, user.passwordHash)) throw new Error("Email or password is incorrect.");
+      const { token } = await createLocalSession(user.id);
+      const cookieOptions = getSessionCookieOptions(ctx.req);
+      ctx.res.cookie(LOCAL_SESSION_COOKIE, token, { ...cookieOptions, maxAge: SESSION_TTL_MS });
+      void recordEvent("account.login", user.id, null);
+      return { user: { id: user.id, name: user.name, email: user.email, role: user.role } };
+    }),
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
+      const token = (0, import_cookie3.parse)(ctx.req.headers.cookie ?? "")[LOCAL_SESSION_COOKIE];
+      if (token) {
+        void deleteLocalSession(token);
+        ctx.res.clearCookie(LOCAL_SESSION_COOKIE, { ...cookieOptions, maxAge: -1 });
+      }
       return { success: true };
     })
   }),
@@ -1661,8 +1917,10 @@ var appRouter = router({
       return { queries: buildModeQueries(input.question, input.mode), mode: input.mode, intent, providers: providersForIntent(intent), bounded: true, maxRounds: Number(process.env.MAX_RESEARCH_ROUNDS || 3) };
     }),
     start: publicProcedure.input(import_zod2.z.object({ question: import_zod2.z.string().trim().min(8).max(1200), mode: import_zod2.z.enum(RESEARCH_MODES).default("quick"), contextText: import_zod2.z.string().max(6e4).optional(), imageUrls: import_zod2.z.array(import_zod2.z.string().url().max(600)).max(4).optional() })).mutation(async ({ input, ctx }) => {
+      if (!checkRate(rateKey(ctx), ctx.user ? 40 : 8)) throw new import_server3.TRPCError({ code: "TOO_MANY_REQUESTS", message: "Hourly research limit reached. Sign in for more, or try again later." });
       const id = await createSession(input.question, ctx.user?.id);
-      const research = runResearch(id, input.question, { contextText: input.contextText, imageUrls: input.imageUrls }, input.mode);
+      void recordEvent("research.started", ctx.user?.id ?? null, { mode: input.mode });
+      const research = runResearch(id, input.question, ctx.user?.id ?? null, { contextText: input.contextText, imageUrls: input.imageUrls }, input.mode);
       if (SYNC_RESEARCH) await research;
       else void research;
       return { id };
@@ -1727,21 +1985,64 @@ ${existing.session.answer.slice(0, 3e4)}` : "";
 Follow-up question: ${input.question}${context}`;
       const newId = await createSession(`${existing.session.question}
 Follow-up: ${input.question}`, ctx.user?.id);
-      const research = runResearch(newId, followUpQuestion, void 0, existing.session.plan?.mode || "quick");
+      const research = runResearch(newId, followUpQuestion, ctx.user?.id ?? null, void 0, existing.session.plan?.mode || "quick");
       if (SYNC_RESEARCH) await research;
       else void research;
       return { id: newId };
+    })
+  }),
+  collections: router({
+    list: publicProcedure.query(({ ctx }) => {
+      if (!ctx.user) throw new Error("Sign in to use collections.");
+      return listCollections(ctx.user.id);
+    }),
+    create: publicProcedure.input(import_zod2.z.object({ name: import_zod2.z.string().trim().min(1).max(120) })).mutation(async ({ input, ctx }) => {
+      if (!ctx.user) throw new Error("Sign in to use collections.");
+      const id = await createCollection(ctx.user.id, input.name);
+      void recordEvent("collection.created", ctx.user.id, null);
+      return { id };
+    }),
+    remove: publicProcedure.input(import_zod2.z.object({ id: import_zod2.z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+      if (!ctx.user) throw new Error("Sign in to use collections.");
+      await deleteCollection(ctx.user.id, input.id);
+      return { success: true };
+    }),
+    assign: publicProcedure.input(import_zod2.z.object({ sessionId: import_zod2.z.number().int().positive(), collectionId: import_zod2.z.number().int().positive().nullable() })).mutation(async ({ input, ctx }) => {
+      if (!ctx.user) throw new Error("Sign in to use collections.");
+      await setSessionCollection(input.sessionId, ctx.user.id, input.collectionId);
+      return { success: true };
+    })
+  }),
+  admin: router({
+    metrics: publicProcedure.input(import_zod2.z.object({ token: import_zod2.z.string().max(200).optional(), days: import_zod2.z.number().int().min(1).max(90).optional() }).optional()).query(async ({ input, ctx }) => {
+      const adminToken = (process.env.ADMIN_METRICS_TOKEN || "").trim();
+      const provided = (input?.token || "").trim();
+      const authorized = ctx.user?.role === "admin" || adminToken !== "" && provided !== "" && provided === adminToken;
+      if (!authorized) throw new import_server3.TRPCError({ code: "UNAUTHORIZED", message: "Admin access required." });
+      return eventMetrics(input?.days ?? 30);
     })
   })
 });
 
 // server/_core/context.ts
+var import_cookie4 = require("cookie");
 async function createContext(opts) {
   let user = null;
   try {
     user = await sdk.authenticateRequest(opts.req);
   } catch (error) {
     user = null;
+  }
+  if (!user) {
+    try {
+      const token = (0, import_cookie4.parse)(opts.req.headers.cookie ?? "")[LOCAL_SESSION_COOKIE];
+      if (token) {
+        const localUser = await getLocalUserByToken(token);
+        if (localUser) user = localUser;
+      }
+    } catch (error) {
+      user = null;
+    }
   }
   return {
     req: opts.req,

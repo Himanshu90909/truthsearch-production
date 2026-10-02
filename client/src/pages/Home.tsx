@@ -113,6 +113,22 @@ export default function Home() {
   const session = trpc.research.get.useQuery({ id: sessionId || 0 }, { enabled: Boolean(sessionId), refetchInterval: (query) => query.state.data?.session.status === "completed" || query.state.data?.session.status === "failed" ? false : 1200 });
   const plan = trpc.research.plan.useQuery({ question: question || "Research a question with live sources", mode }, { enabled: question.length >= 8 });
   const providerStatus = trpc.research.providers.useQuery();
+  const [authModal, setAuthModal] = useState(false);
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authName, setAuthName] = useState("");
+  const [selectedCollection, setSelectedCollection] = useState<number | null>(null);
+  const [assignMenuId, setAssignMenuId] = useState<number | null>(null);
+  const me = trpc.auth.me.useQuery();
+  const user = me.data ?? null;
+  const login = trpc.auth.login.useMutation({ onSuccess: () => { setAuthModal(false); setAuthEmail(""); setAuthPassword(""); setAuthName(""); void me.refetch(); void history.refetch(); } });
+  const register = trpc.auth.register.useMutation({ onSuccess: () => { setAuthModal(false); setAuthEmail(""); setAuthPassword(""); setAuthName(""); void me.refetch(); void history.refetch(); } });
+  const logout = trpc.auth.logout.useMutation({ onSuccess: () => { void me.refetch(); setSelectedCollection(null); } });
+  const collections = trpc.collections.list.useQuery(undefined, { enabled: Boolean(user) });
+  const createCollectionMut = trpc.collections.create.useMutation({ onSuccess: () => void collections.refetch() });
+  const removeCollection = trpc.collections.remove.useMutation({ onSuccess: () => void collections.refetch() });
+  const assignToCollection = trpc.collections.assign.useMutation({ onSuccess: () => { void collections.refetch(); void history.refetch(); } });
   const data = session.data as any;
   const sources = (data?.sources || []) as Source[];
   const evidence = (data?.session?.plan?.evidence || data?.evidence || []) as Evidence[];
@@ -122,6 +138,7 @@ export default function Home() {
   const claimStatuses = ((data?.session?.plan?.claimStatuses as ClaimStatus[] | undefined) || evidence.map(() => "verified" as ClaimStatus));
   const latestProgress = data?.messages?.filter((m: any) => m.role === "system").at(-1)?.content || "Ready for a question";
   const activeStage = Math.max(0, stages.findIndex((s) => latestProgress.toLowerCase().includes(s)));
+  const visibleHistory = (history.data || []).filter((item) => selectedCollection === null || item.collectionId === selectedCollection);
   const confidence = Math.round(evidence.length ? evidence.slice(0, 6).reduce((sum, item) => sum + (item.supportScore || item.qualityScore || 70), 0) / Math.min(evidence.length, 6) : 0);
 
   useEffect(() => { if (start.error) setSessionId(null); }, [start.error]);
@@ -216,7 +233,8 @@ export default function Home() {
     <aside className="chat-sidebar" aria-label="Saved research">
       <div className="chat-sidebar-head"><Logo /><button type="button" className="icon-button" onClick={() => setDark(!dark)} aria-label="Toggle theme">{dark ? <Sun size={16} /> : <Moon size={16} />}</button></div>
       <button className="sidebar-new" onClick={() => { setSessionId(null); setQuestion(""); setFollowups([]); }}><Plus size={15} /> New research</button>
-      <nav className="sidebar-section sidebar-scroll" aria-label="Recent research"><div className="eyebrow">Saved research</div>{history.data?.length ? <div className="history-list">{history.data.map((item) => <button type="button" className={`history-item ${item.id === sessionId ? "active" : ""}`} key={item.id} onClick={() => { setSessionId(item.id); setQuestion(item.title); setSidebarOpen(false); }}><strong>{item.title}</strong><small>{item.status === "completed" ? "Completed" : item.status === "failed" ? "Failed" : "In progress"}</small></button>)}</div> : <p className="sidebar-empty">Your prompts and answers are saved here automatically after each research.</p>}</nav>
+      {user ? <div className="account-row"><div className="account-avatar">{(user.name || user.email || "?").slice(0, 1).toUpperCase()}</div><div className="account-info"><strong>{user.name}</strong><small>{user.email}</small></div><button type="button" className="account-signout" onClick={() => logout.mutate()} disabled={logout.isPending}>Sign out</button></div> : <button type="button" className="signin-button" onClick={() => setAuthModal(true)}>Sign in · save your research</button>}
+      <nav className="sidebar-section sidebar-scroll" aria-label="Recent research">{user ? <div className="collections-block"><div className="eyebrow">Collections</div><div className="collection-list"><button type="button" className={`collection-item ${selectedCollection === null ? "active" : ""}`} onClick={() => setSelectedCollection(null)}>All research</button>{(collections.data || []).map((c) => <div className={`collection-item ${selectedCollection === c.id ? "active" : ""}`} key={c.id} onClick={() => setSelectedCollection(c.id)}><span>{c.name}</span><small>{c.sessionCount}</small><button type="button" className="collection-delete" onClick={(e) => { e.stopPropagation(); removeCollection.mutate({ id: c.id }); if (selectedCollection === c.id) setSelectedCollection(null); }} aria-label={`Delete collection ${c.name}`}><X size={11} /></button></div>)}<form className="collection-new" onSubmit={(e) => { e.preventDefault(); const el = e.currentTarget.elements.namedItem("name") as HTMLInputElement | null; if (el?.value.trim()) { createCollectionMut.mutate({ name: el.value.trim() }); el.value = ""; } }}><input name="name" placeholder="New collection…" maxLength={120} aria-label="New collection name" /><button type="submit" aria-label="Create collection"><Plus size={13} /></button></form></div></div> : null}<div className="eyebrow">Saved research</div>{visibleHistory.length ? <div className="history-list">{visibleHistory.map((item) => <div className={`history-row ${item.id === sessionId ? "active" : ""}`} key={item.id}><button type="button" className="history-item" onClick={() => { setSessionId(item.id); setQuestion(item.title); setSidebarOpen(false); }}><strong>{item.title}</strong><small>{item.status === "completed" ? "Completed" : item.status === "failed" ? "Failed" : "In progress"}</small></button>{user && <button type="button" className="history-assign" onClick={() => setAssignMenuId(assignMenuId === item.id ? null : item.id)} aria-label="Move to collection"><Plus size={12} /></button>}{assignMenuId === item.id && <div className="assign-menu" role="menu">{collections.data?.length ? collections.data.map((c) => <button type="button" key={c.id} onClick={() => { assignToCollection.mutate({ sessionId: item.id, collectionId: c.id }); setAssignMenuId(null); }}>{item.collectionId === c.id ? "✓ " : ""}{c.name}</button>) : <span>Create a collection first.</span>}{item.collectionId !== null && item.collectionId !== undefined && <button type="button" onClick={() => { assignToCollection.mutate({ sessionId: item.id, collectionId: null }); setAssignMenuId(null); }}>Remove from collection</button>}</div>}</div>)}</div> : <p className="sidebar-empty">{user ? "Your prompts and answers are saved here automatically after each research." : "Sign in to keep your research history and collections synced across devices."}</p>}</nav>
       <div className="sidebar-foot">
         <div className="sidebar-section"><div className="eyebrow">RL learning</div>{(() => { const s = rlSummary(); return s.samples > 0 ? <p className="sidebar-empty">{s.samples} feedback {s.samples === 1 ? "sample" : "samples"} · best source: {s.top}</p> : <p className="sidebar-empty">Rate answers with Helpful / Not helpful — the app learns which sources to trust.</p>; })()}</div>
         <p className="sidebar-foot-meta">Evidence before certainty · {providerStatus.data?.knowledge?.filter((p: any) => p.enabled).length || 0} providers ready</p>
@@ -257,6 +275,19 @@ export default function Home() {
         </section>
       </div>}
     </main>
+    {authModal && <div className="auth-backdrop" onClick={() => setAuthModal(false)}><div className="auth-modal" onClick={(e) => e.stopPropagation()}>
+      <div className="eyebrow">{authMode === "login" ? "Welcome back" : "Create your account"}</div>
+      <h3>{authMode === "login" ? "Sign in to TruthSearch" : "Save your research, forever"}</h3>
+      <p>Accounts keep your research history, collections, and feedback synced across devices.</p>
+      <form onSubmit={(e) => { e.preventDefault(); if (authMode === "login") login.mutate({ email: authEmail, password: authPassword }); else register.mutate({ email: authEmail, password: authPassword, ...(authName.trim() ? { name: authName.trim() } : {}) }); }}>
+        {authMode === "register" && <input type="text" placeholder="Name (optional)" value={authName} onChange={(e) => setAuthName(e.target.value)} autoComplete="name" maxLength={80} />}
+        <input type="email" required placeholder="Email" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} autoComplete="email" />
+        <input type="password" required minLength={authMode === "register" ? 8 : 1} placeholder={authMode === "register" ? "Password (8+ characters)" : "Password"} value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} autoComplete={authMode === "login" ? "current-password" : "new-password"} />
+        {(login.error || register.error) && <div className="auth-error" role="alert">{login.error?.message || register.error?.message}</div>}
+        <button type="submit" disabled={login.isPending || register.isPending}>{login.isPending || register.isPending ? "One moment…" : authMode === "login" ? "Sign in" : "Create account"}</button>
+      </form>
+      <button type="button" className="auth-switch" onClick={() => setAuthMode(authMode === "login" ? "register" : "login")}>{authMode === "login" ? "New here? Create an account" : "Already have an account? Sign in"}</button>
+    </div></div>}
     {sidebarOpen && <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)}><aside className="mobile-sidebar" onClick={(e) => e.stopPropagation()}><button className="close-button" onClick={() => setSidebarOpen(false)} aria-label="Close navigation"><X size={18} /></button><Logo /><button className="sidebar-new" onClick={() => { setSessionId(null); setQuestion(""); setSidebarOpen(false); }}><Sparkles size={15} /> New research</button><div className="eyebrow">Recent research</div>{history.data?.length ? <div className="history-list">{history.data.map((item) => <button type="button" className="history-item" key={item.id} onClick={() => { setSessionId(item.id); setSidebarOpen(false); }}><strong>{item.title}</strong><small>{item.status === "completed" ? "Completed" : item.status === "failed" ? "Failed" : "In progress"}</small></button>)}</div> : <p className="sidebar-empty">Your completed research will appear here.</p>}</aside></div>}
     {cameraOpen && <CameraCapture onClose={() => setCameraOpen(false)} onPickImage={() => { setCameraOpen(false); photoInputRef.current?.click(); }} onCapture={(file) => { setCameraOpen(false); addFiles([file], "photo"); }} />}
     {previewAttachment?.preview && <div className="preview-backdrop" onClick={() => setPreviewAttachment(null)}><div className="image-preview" role="dialog" aria-modal="true" aria-label={`Preview ${previewAttachment.file.name}`} onClick={(e) => e.stopPropagation()}><button className="close-button" onClick={() => setPreviewAttachment(null)} aria-label="Close image preview"><X size={18} /></button><img src={previewAttachment.preview} alt={previewAttachment.file.name} /><strong>{previewAttachment.file.name}</strong><span>{formatBytes(previewAttachment.file.size)}</span><button className="remove-preview" onClick={() => { removeAttachment(previewAttachment.id); setPreviewAttachment(null); }}>Remove attachment</button></div></div>}

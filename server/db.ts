@@ -1,7 +1,8 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users, researchSessions, researchMessages, researchQueries, researchSources, researchPassages, researchClaims, researchEvidence, researchCitations } from "../drizzle/schema";
+import { InsertUser, users, researchSessions, researchMessages, researchQueries, researchSources, researchPassages, researchClaims, researchEvidence, researchCitations, localSessions, collections, analyticsEvents } from "../drizzle/schema";
 import { ENV } from "./_core/env";
+import { SESSION_TTL_MS, newSessionToken } from "./auth-local";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 export async function getDb() { if (!_db && process.env.DATABASE_URL) { try { _db = drizzle(process.env.DATABASE_URL); } catch (error) { console.warn("[Database] Failed to connect:", error); } } return _db; }
@@ -11,7 +12,7 @@ export async function getDb() { if (!_db && process.env.DATABASE_URL) { try { _d
 // deployment), research sessions are kept in process memory instead of MySQL.
 // Same shapes as the drizzle rows, so routers and the client need no changes.
 // ---------------------------------------------------------------------------
-type MemSession = { id: number; title: string; question: string; userId: number | null; status: "queued" | "researching" | "completed" | "failed"; answer: string | null; plan: unknown; error: string | null; createdAt: Date; updatedAt: Date };
+type MemSession = { id: number; title: string; question: string; userId: number | null; status: "queued" | "researching" | "completed" | "failed"; answer: string | null; plan: unknown; error: string | null; collectionId: number | null; createdAt: Date; updatedAt: Date };
 type MemMessage = { id: number; sessionId: number; role: "user" | "assistant" | "system"; content: string; createdAt: Date };
 type MemQuery = { id: number; sessionId: number; query: string; provider: string; status: "planned" | "searched" | "failed"; resultCount: number; createdAt: Date };
 type MemSource = { id: number; sessionId: number; url: string; canonicalUrl: string | null; title: string | null; domain: string | null; author: string | null; publicationDate: string | null; sourceType: string | null; qualityScore: number | null; content: string | null };
@@ -39,7 +40,7 @@ export async function createSession(question: string, userId?: number) {
   if (!db) {
     const id = memId();
     const now = new Date();
-    mem.sessions.set(id, { id, title: question.slice(0, 120), question, userId: userId ?? null, status: "queued", answer: null, plan: null, error: null, createdAt: now, updatedAt: now });
+    mem.sessions.set(id, { id, title: question.slice(0, 120), question, userId: userId ?? null, status: "queued", answer: null, plan: null, error: null, collectionId: null, createdAt: now, updatedAt: now });
     return id;
   }
   const result = await db.insert(researchSessions).values({ title: question.slice(0, 120), question, userId, status: "queued" }); return Number(result[0].insertId);
@@ -73,10 +74,10 @@ export async function listSessions(userId?: number, limit = 30) {
       .filter((s) => (userId ? s.userId === userId : true))
       .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
       .slice(0, Math.min(Math.max(limit, 1), 100))
-      .map((s) => ({ id: s.id, title: s.title, question: s.question, status: s.status, createdAt: s.createdAt, updatedAt: s.updatedAt }));
+      .map((s) => ({ id: s.id, title: s.title, question: s.question, status: s.status, collectionId: s.collectionId, createdAt: s.createdAt, updatedAt: s.updatedAt }));
   }
   const where = userId ? eq(researchSessions.userId, userId) : undefined;
-  return db.select({ id: researchSessions.id, title: researchSessions.title, question: researchSessions.question, status: researchSessions.status, createdAt: researchSessions.createdAt, updatedAt: researchSessions.updatedAt }).from(researchSessions).where(where).orderBy(desc(researchSessions.updatedAt)).limit(Math.min(Math.max(limit, 1), 100));
+  return db.select({ id: researchSessions.id, title: researchSessions.title, question: researchSessions.question, status: researchSessions.status, collectionId: researchSessions.collectionId, createdAt: researchSessions.createdAt, updatedAt: researchSessions.updatedAt }).from(researchSessions).where(where).orderBy(desc(researchSessions.updatedAt)).limit(Math.min(Math.max(limit, 1), 100));
 }
 
 export async function getSession(id: number, userId?: number) {
@@ -104,4 +105,175 @@ export async function getSession(id: number, userId?: number) {
     ? await db.select().from(researchEvidence).where(inArray(researchEvidence.claimId, claims.map((claim) => claim.id)))
     : [];
   return { session, messages, queries, sources, claims, evidence };
+}
+
+// ---------------------------------------------------------------------------
+// Startup infrastructure: local accounts, collections, analytics events.
+// Same dual-mode contract as above — MySQL via drizzle when DATABASE_URL is
+// present, in-process fallback otherwise.
+// ---------------------------------------------------------------------------
+type MemUser = { id: number; openId: string; name: string | null; email: string | null; passwordHash: string | null; role: "user" | "admin"; createdAt: Date; updatedAt: Date; lastSignedIn: Date };
+type MemLocalSession = { token: string; userId: number; createdAt: Date; expiresAt: Date };
+type MemCollection = { id: number; userId: number; name: string; createdAt: Date };
+type MemEvent = { id: number; userId: number | null; type: string; meta: Record<string, unknown> | null; createdAt: Date };
+
+const startupMem = {
+  users: new Map<number, MemUser>(),
+  localSessions: new Map<string, MemLocalSession>(),
+  collections: [] as MemCollection[],
+  events: [] as MemEvent[],
+};
+
+export type CollectionRow = { id: number; name: string; createdAt: Date; sessionCount: number };
+
+export async function getUserByEmail(email: string) {
+  const db = await getDb();
+  if (!db) {
+    for (const user of Array.from(startupMem.users.values())) if (user.email === email) return user;
+    return undefined;
+  }
+  const result = await db.select().from(users).where(eq(users.email, email)).limit(1);
+  return result[0];
+}
+
+export async function createLocalUser(input: { email: string; name: string | null; passwordHash: string }) {
+  const db = await getDb();
+  if (!db) {
+    const now = new Date();
+    const id = memId();
+    const user: MemUser = { id, openId: `local:${input.email}`, name: input.name, email: input.email, passwordHash: input.passwordHash, role: "user", createdAt: now, updatedAt: now, lastSignedIn: now };
+    startupMem.users.set(id, user);
+    return user;
+  }
+  await db.insert(users).values({ openId: `local:${input.email}`, name: input.name, email: input.email, passwordHash: input.passwordHash, loginMethod: "password" });
+  const created = await getUserByEmail(input.email);
+  if (!created) throw new Error("Account creation failed.");
+  return created;
+}
+
+export async function createLocalSession(userId: number) {
+  const token = newSessionToken();
+  const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+  const db = await getDb();
+  if (!db) {
+    startupMem.localSessions.set(token, { token, userId, createdAt: new Date(), expiresAt });
+    return { token, expiresAt };
+  }
+  await db.insert(localSessions).values({ token, userId, expiresAt });
+  return { token, expiresAt };
+}
+
+export async function getLocalUserByToken(token: string) {
+  const db = await getDb();
+  if (!db) {
+    const session = startupMem.localSessions.get(token);
+    if (!session || session.expiresAt.getTime() < Date.now()) return undefined;
+    return startupMem.users.get(session.userId);
+  }
+  const session = (await db.select().from(localSessions).where(eq(localSessions.token, token)).limit(1))[0];
+  if (!session || session.expiresAt.getTime() < Date.now()) return undefined;
+  const user = (await db.select().from(users).where(eq(users.id, session.userId)).limit(1))[0];
+  return user;
+}
+
+export async function deleteLocalSession(token: string) {
+  const db = await getDb();
+  if (!db) { startupMem.localSessions.delete(token); return; }
+  await db.delete(localSessions).where(eq(localSessions.token, token));
+}
+
+export async function createCollection(userId: number, name: string) {
+  const db = await getDb();
+  if (!db) {
+    const id = memId();
+    startupMem.collections.push({ id, userId, name, createdAt: new Date() });
+    return id;
+  }
+  const result = await db.insert(collections).values({ userId, name });
+  return Number(result[0].insertId);
+}
+
+export async function listCollections(userId: number): Promise<CollectionRow[]> {
+  const db = await getDb();
+  if (!db) {
+    return startupMem.collections
+      .filter((c) => c.userId === userId)
+      .map((c) => ({ id: c.id, name: c.name, createdAt: c.createdAt, sessionCount: Array.from(mem.sessions.values()).filter((s) => s.collectionId === c.id).length }))
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  }
+  const rows = await db.select({ id: collections.id, name: collections.name, createdAt: collections.createdAt, sessionCount: sql<number>`count(${researchSessions.id})` }).from(collections).leftJoin(researchSessions, eq(researchSessions.collectionId, collections.id)).where(eq(collections.userId, userId)).groupBy(collections.id).orderBy(desc(collections.createdAt));
+  return rows.map((r) => ({ ...r, sessionCount: Number(r.sessionCount) }));
+}
+
+export async function deleteCollection(userId: number, collectionId: number) {
+  const db = await getDb();
+  if (!db) {
+    startupMem.collections = startupMem.collections.filter((c) => !(c.id === collectionId && c.userId === userId));
+    for (const s of Array.from(mem.sessions.values())) if (s.collectionId === collectionId) s.collectionId = null;
+    return;
+  }
+  await db.update(researchSessions).set({ collectionId: null }).where(eq(researchSessions.collectionId, collectionId));
+  await db.delete(collections).where(and(eq(collections.id, collectionId), eq(collections.userId, userId)));
+}
+
+export async function setSessionCollection(sessionId: number, userId: number, collectionId: number | null) {
+  const db = await getDb();
+  if (!db) {
+    const session = mem.sessions.get(sessionId);
+    if (!session || session.userId !== userId) throw new Error("Research session not found.");
+    if (collectionId !== null && !startupMem.collections.some((c) => c.id === collectionId && c.userId === userId)) throw new Error("Collection not found.");
+    session.collectionId = collectionId;
+    touch(session);
+    return;
+  }
+  const session = (await db.select().from(researchSessions).where(and(eq(researchSessions.id, sessionId), eq(researchSessions.userId, userId))).limit(1))[0];
+  if (!session) throw new Error("Research session not found.");
+  if (collectionId !== null) {
+    const collection = (await db.select().from(collections).where(and(eq(collections.id, collectionId), eq(collections.userId, userId))).limit(1))[0];
+    if (!collection) throw new Error("Collection not found.");
+  }
+  await db.update(researchSessions).set({ collectionId }).where(eq(researchSessions.id, sessionId));
+}
+
+export async function recordEvent(type: string, userId: number | null, meta: Record<string, unknown> | null = null) {
+  const db = await getDb();
+  if (!db) { startupMem.events.push({ id: memId(), userId, type, meta, createdAt: new Date() }); return; }
+  try { await db.insert(analyticsEvents).values({ userId, type, meta }); } catch (error) { console.warn("[Analytics] Failed to record event:", error); }
+}
+
+export type EventMetrics = {
+  totalsByType: Array<{ type: string; count: number }>;
+  daily: Array<{ date: string; count: number }>;
+  research: { completed: number; failed: number; avgLatencyMs: number | null; totalSources: number };
+  recentEvents: Array<{ type: string; userId: number | null; meta: Record<string, unknown> | null; createdAt: Date }>;
+};
+
+export async function eventMetrics(days = 30): Promise<EventMetrics> {
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  const db = await getDb();
+  let rows: Array<{ type: string; userId: number | null; meta: Record<string, unknown> | null; createdAt: Date }>;
+  if (!db) {
+    rows = startupMem.events.filter((e) => e.createdAt >= since);
+  } else {
+    rows = (await db.select({ type: analyticsEvents.type, userId: analyticsEvents.userId, meta: analyticsEvents.meta, createdAt: analyticsEvents.createdAt }).from(analyticsEvents).where(sql`${analyticsEvents.createdAt} >= ${since}`).orderBy(desc(analyticsEvents.createdAt)).limit(5000)) as Array<{ type: string; userId: number | null; meta: Record<string, unknown> | null; createdAt: Date }>;
+  }
+  const totals = new Map<string, number>();
+  const daily = new Map<string, number>();
+  let completed = 0, failed = 0, latencySum = 0, latencyCount = 0, totalSources = 0;
+  for (const row of rows) {
+    totals.set(row.type, (totals.get(row.type) || 0) + 1);
+    const day = row.createdAt.toISOString().slice(0, 10);
+    daily.set(day, (daily.get(day) || 0) + 1);
+    if (row.type === "research.completed") completed++;
+    if (row.type === "research.failed") failed++;
+    const latency = typeof row.meta?.latencyMs === "number" ? (row.meta.latencyMs as number) : null;
+    if (latency !== null) { latencySum += latency; latencyCount++; }
+    if (typeof row.meta?.sources === "number") totalSources += row.meta.sources as number;
+  }
+  return {
+    totalsByType: Array.from(totals.entries()).map(([type, count]) => ({ type, count })).sort((a, b) => b.count - a.count),
+    daily: Array.from(daily.entries()).map(([date, count]) => ({ date, count })).sort((a, b) => a.date.localeCompare(b.date)),
+    research: { completed, failed, avgLatencyMs: latencyCount ? Math.round(latencySum / latencyCount) : null, totalSources },
+    recentEvents: rows.slice(0, 50),
+  };
 }
