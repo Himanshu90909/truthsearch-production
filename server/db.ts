@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/postgres-js";
-import postgres from "postgres";
+import { drizzle } from "drizzle-orm/neon-http";
+import { neon } from "@neondatabase/serverless";
 import { InsertUser, users, researchSessions, researchMessages, researchQueries, researchSources, researchPassages, researchClaims, researchEvidence, researchCitations, localSessions, collections, analyticsEvents } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 import { SESSION_TTL_MS, newSessionToken } from "./auth-local";
@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS "analytics_events" ("id" serial PRIMARY KEY NOT NULL,
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
-      _db = drizzle(postgres(process.env.DATABASE_URL, { max: 5, prepare: false }));
+      _db = drizzle(neon(process.env.DATABASE_URL));
       const statements = SCHEMA_DDL.split("-- @next").map((x) => x.trim()).filter(Boolean);
       _schemaReady = (async () => { for (const stmt of statements) { try { await _db.execute(sql.raw(stmt)); } catch (error) { if (!/already exists/i.test(String(error))) console.warn("[Database] Bootstrap statement failed:", error); } } })();
     } catch (error) { console.warn("[Database] Failed to connect:", error); }

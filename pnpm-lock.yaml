@@ -28,6 +28,9 @@ importers:
       '@huggingface/transformers':
         specifier: ^3.7.4
         version: 3.8.1
+      '@neondatabase/serverless':
+        specifier: ^1.2.0
+        version: 1.2.0
       '@radix-ui/react-accordion':
         specifier: ^1.2.12
         version: 1.2.12(@types/react-dom@19.2.1(@types/react@19.2.1))(@types/react@19.2.1)(react-dom@19.2.1(react@19.2.1))(react@19.2.1)
@@ -141,7 +144,7 @@ importers:
         version: 17.2.3
       drizzle-orm:
         specifier: ^0.44.5
-        version: 0.44.6(mysql2@3.15.1)(postgres@3.4.9)
+        version: 0.44.6(@neondatabase/serverless@1.2.0)(mysql2@3.15.1)(postgres@3.4.9)
       embla-carousel-react:
         specifier: ^8.6.0
         version: 8.6.0(react@19.2.1)
@@ -169,9 +172,6 @@ importers:
       next-themes:
         specifier: ^0.4.6
         version: 0.4.6(react-dom@19.2.1(react@19.2.1))(react@19.2.1)
-      postgres:
-        specifier: ^3.4.5
-        version: 3.4.9
       react:
         specifier: ^19.2.1
         version: 19.2.1
@@ -1213,6 +1213,10 @@ packages:
 
   '@mermaid-js/parser@0.6.3':
     resolution: {integrity: sha512-lnjOhe7zyHjc+If7yT4zoedx2vo4sHaTmtkl1+or8BRTnCtDmcTpAjpzDSfCZrshM5bCoz0GyidzadJAH1xobA==}
+
+  '@neondatabase/serverless@1.2.0':
+    resolution: {integrity: sha512-tnaqgixUengZQNd9ZrS3ytQfamJzLKY8QxgqWQTNHHtB+KrFQWk77JTbbpg4RD+J3qE4eO2lVytvGDX5Kj6FdQ==}
+    engines: {node: '>=19.0.0'}
 
   '@protobufjs/aspromise@1.1.2':
     resolution: {integrity: sha512-j+gKExEuLmKwvz3OgROXtrJ2UG2x8Ch2YZUxahh+s1F2HZ+wAceUNLkvy6zKCPVRkU++ZWQrdxsUeQXmcg4uoQ==}
@@ -5777,6 +5781,8 @@ snapshots:
     dependencies:
       langium: 3.3.1
 
+  '@neondatabase/serverless@1.2.0': {}
+
   '@protobufjs/aspromise@1.1.2': {}
 
   '@protobufjs/base64@1.1.2': {}
@@ -7751,8 +7757,9 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  drizzle-orm@0.44.6(mysql2@3.15.1)(postgres@3.4.9):
+  drizzle-orm@0.44.6(@neondatabase/serverless@1.2.0)(mysql2@3.15.1)(postgres@3.4.9):
     optionalDependencies:
+      '@neondatabase/serverless': 1.2.0
       mysql2: 3.15.1
       postgres: 3.4.9
 
@@ -9003,7 +9010,8 @@ snapshots:
       picocolors: 1.1.1
       source-map-js: 1.2.1
 
-  postgres@3.4.9: {}
+  postgres@3.4.9:
+    optional: true
 
   prettier@3.6.2: {}
 

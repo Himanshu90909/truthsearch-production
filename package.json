@@ -17,6 +17,7 @@
     "@aws-sdk/s3-request-presigner": "^3.693.0",
     "@hookform/resolvers": "^5.2.2",
     "@huggingface/transformers": "^3.7.4",
+    "@neondatabase/serverless": "^1.2.0",
     "@radix-ui/react-accordion": "^1.2.12",
     "@radix-ui/react-alert-dialog": "^1.1.15",
     "@radix-ui/react-aspect-ratio": "^1.1.7",
@@ -79,8 +80,7 @@
     "vaul": "^1.1.2",
     "wouter": "^3.3.5",
     "xlsx": "^0.18.5",
-    "zod": "^4.1.12",
-    "postgres": "^3.4.5"
+    "zod": "^4.1.12"
   },
   "devDependencies": {
     "@builder.io/vite-plugin-jsx-loc": "^0.1.1",
