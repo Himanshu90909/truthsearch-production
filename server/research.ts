@@ -253,11 +253,24 @@ export function synthesisModelConfigured(): boolean {
 // sentence comes from a retrieved source with an inline [n] citation — no
 // model knowledge is used, so nothing needs an "unverified" label.
 // ---------------------------------------------------------------------------
+function looksLikeProse(quote: string): boolean {
+  const trimmed = quote.trim();
+  if (trimmed.length < 40) return false;
+  const asciiLetters = (trimmed.match(/[a-zA-Z]/g) || []).length;
+  const spaces = (trimmed.match(/\s/g) || []).length;
+  const words = trimmed.split(/\s+/).length;
+  return asciiLetters / trimmed.length >= 0.45 && spaces / trimmed.length >= 0.1 && words >= 12;
+}
+
 export function extractiveFallbackAnswer(question: string, evidence: EvidenceRecord[], conflicts: ReturnType<typeof detectContradictions>, mode: ResearchMode): string {
   const banner = "> **Extractive answer** — no synthesis model is configured on this deployment, so this answer is a digest composed entirely of the strongest retrieved passages, each cited [n]. Every sentence comes directly from the sources.";
-  const top = evidence.slice(0, 6);
-  const direct = top.slice(0, 2).map((e) => `${e.quote} [${evidence.indexOf(e) + 1}]`).join(" ");
-  const analysis = top.slice(2, 5).map((e) => `${e.quote} [${evidence.indexOf(e) + 1}]`).join(" ");
+  // Prefer human-written prose over navigation boilerplate / link dumps that
+  // sometimes rank highly (TOCs, language lists). Citations keep ORIGINAL indices.
+  const prose = evidence.map((e, i) => ({ e, i })).filter(({ e }) => looksLikeProse(e.quote));
+  const pool = prose.length >= 2 ? prose : evidence.map((e, i) => ({ e, i }));
+  const top = pool.slice(0, 6);
+  const direct = top.slice(0, 2).map(({ e, i }) => `${e.quote} [${i + 1}]`).join(" ");
+  const analysis = top.slice(2, 5).map(({ e, i }) => `${e.quote} [${i + 1}]`).join(" ");
   const sections: string[] = [banner];
   sections.push("## Direct answer");
   sections.push(mode === "verify"
@@ -266,7 +279,7 @@ export function extractiveFallbackAnswer(question: string, evidence: EvidenceRec
   sections.push("## Why it happens — analysis");
   sections.push(analysis || "Not enough retrieved passages to build an analysis.");
   sections.push("## Evidence and sources");
-  sections.push(evidence.slice(0, 8).map((e, i) => `- [${i + 1}] ${e.title} — ${e.quote.slice(0, 280)} [${i + 1}]`).join("\n"));
+  sections.push(pool.slice(0, 8).map(({ e, i }) => `- [${i + 1}] ${e.title} — ${e.quote.slice(0, 280)} [${i + 1}]`).join("\n"));
   sections.push("## Conflicting evidence");
   sections.push(conflicts.length
     ? conflicts.map((c) => `- ${c.description || "Mixed statements were found across sources."}`).join("\n")
