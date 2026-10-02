@@ -247,6 +247,37 @@ export function synthesisModelConfigured(): boolean {
   return synthesisProviders().length > 0;
 }
 
+// ---------------------------------------------------------------------------
+// Extractive fallback: when no synthesis model is configured (no-card mode),
+// compose the answer purely from the top-ranked verified passages. Every
+// sentence comes from a retrieved source with an inline [n] citation — no
+// model knowledge is used, so nothing needs an "unverified" label.
+// ---------------------------------------------------------------------------
+export function extractiveFallbackAnswer(question: string, evidence: EvidenceRecord[], conflicts: ReturnType<typeof detectContradictions>, mode: ResearchMode): string {
+  const banner = "> **Extractive answer** — no synthesis model is configured on this deployment, so this answer is a digest composed entirely of the strongest retrieved passages, each cited [n]. Every sentence comes directly from the sources.";
+  const top = evidence.slice(0, 6);
+  const direct = top.slice(0, 2).map((e) => `${e.quote} [${evidence.indexOf(e) + 1}]`).join(" ");
+  const analysis = top.slice(2, 5).map((e) => `${e.quote} [${evidence.indexOf(e) + 1}]`).join(" ");
+  const sections: string[] = [banner];
+  sections.push("## Direct answer");
+  sections.push(mode === "verify"
+    ? `${conflicts.length ? "The retrieved sources are mixed on this claim" : "The strongest retrieved sources state the following"}: ${direct}`
+    : direct || "The retrieved sources are quoted below.");
+  sections.push("## Why it happens — analysis");
+  sections.push(analysis || "Not enough retrieved passages to build an analysis.");
+  sections.push("## Evidence and sources");
+  sections.push(evidence.slice(0, 8).map((e, i) => `- [${i + 1}] ${e.title} — ${e.quote.slice(0, 280)} [${i + 1}]`).join("\n"));
+  sections.push("## Conflicting evidence");
+  sections.push(conflicts.length
+    ? conflicts.map((c) => `- ${c.description || "Mixed statements were found across sources."}`).join("\n")
+    : "The retrieved sources are consistent.");
+  sections.push("## Limitations");
+  sections.push("This deployment has no synthesis model configured, so the answer cannot reason across sources — only quote them. Add `HF_API_KEY`, `GEMINI_API_KEY`, or `XAI_API_KEY` (Groq) to enable full analysis.");
+  sections.push("## Conclusion");
+  sections.push(top.length ? `The strongest retrieved evidence is quoted above; see citations [1]-[${Math.min(evidence.length, 8)}].` : "");
+  return sections.filter(Boolean).join("\n\n");
+}
+
 export async function callSynthesisLLM(params: Parameters<typeof invokeLLM>[0], kind: "vision" | "code" | "general" = "general"): Promise<Awaited<ReturnType<typeof invokeLLM>>> {
   const providers = synthesisProviders();
   if (!providers.length) {
@@ -460,8 +491,17 @@ export async function conductResearch(question: string, onProgress: (p: Research
   const imageParts = (userAttachments?.imageUrls || []).map((url) => ({ type: "image_url" as const, image_url: { url } }));
   const instruction = `Question: ${question}${attachmentBlock}\n\nVerified evidence:\n${context}\n\n${technicalQuestion ? "This is a technical question. Answer it directly, completely, and practically from your own expertise: explain the concept, give concrete examples, and where useful include correct, runnable code. Use the retrieved evidence only where it genuinely helps, citing it with [n]; otherwise answer without citations.\n\n" : ""}${fromKnowledgeOnly ? "The retrieved web evidence is empty, so answer entirely from your own knowledge. Do NOT use [n] citations at all — there are no sources to cite.\n\n" : ""}${mode === "verify" ? "This is a fact-verification request. In the Direct answer, state a clear verdict: confirmed by evidence / partially confirmed / not supported by the retrieved evidence, then quote the decisive passages with [n] and compare what different sources say.\n\n" : ""}Write a research answer with exactly these sections, in this order:\n\n## Direct answer\n2-4 sentences that directly answer the question${evidence.length ? ", with inline [n] citations" : ""}.\n\n## Why it happens — analysis\nExplain the underlying causes, mechanisms, and context behind the answer, the way a knowledgeable person would explain it to a curious reader: what drives the phenomenon, how the pieces connect, and what it means in practice. Reason across the evidence instead of only restating quotes. Every factual statement from web research must cite [n].\n\n## Evidence and sources\nThe strongest retrieved evidence that supports the analysis, cited inline.\n\n## Conflicting evidence\nOnly if the retrieved sources disagree or the evidence is mixed; otherwise state that retrieved sources are consistent.\n\n## Limitations\nWhat the retrieved evidence cannot answer, and how current or complete it is.\n\n## Conclusion\n2-3 closing sentences with citations.\n\n## Suggested follow-up questions\nExactly three questions a reader would naturally ask next, one per line, each on its own as a list item.${imageParts.length ? " The user attached image(s) as visual context; describe what is relevant to the question and clearly separate what comes from the images versus the cited web evidence." : ""}`;
   const userMessageContent: any = imageParts.length ? [{ type: "text", text: instruction }, ...imageParts] : instruction;
-  const response = await callSynthesisLLM({ messages: [{ role: "system", content: "You are a research analyst. You write answers that research like a search engine and explain like a teacher: direct, then causal — what happens, why it happens, and what it means. Every factual sentence that comes from the retrieved evidence must cite [n]. If the retrieved evidence does not answer part of the question, fill the gap from your own knowledge and mark those sentences inline with 'model knowledge' so the reader can tell what is sourced and what is not. If evidence conflicts, explicitly say evidence is mixed. Never invent URLs, sources, citations, or fake [n] references, and never present model-knowledge claims as cited facts. Do not reveal private reasoning." }, { role: "user", content: userMessageContent }] }, imageParts.length ? "vision" : technicalQuestion ? "code" : "general");
-  const answer = typeof response.choices?.[0]?.message?.content === "string" ? response.choices[0].message.content : "The answer generator did not return usable content.";
+  let answer: string;
+  if (!synthesisModelConfigured()) {
+    if (!evidence.length) {
+      throw new Error("No synthesis model is configured and no readable sources were retrieved, so no answer can be produced. Set HF_API_KEY, GEMINI_API_KEY, or XAI_API_KEY (Groq).");
+    }
+    onProgress({ stage: "synthesizing", detail: "No synthesis model configured — composing an extractive digest from the top verified passages (no model knowledge)", at: Date.now() });
+    answer = extractiveFallbackAnswer(question, evidence, conflicts, mode);
+  } else {
+    const response = await callSynthesisLLM({ messages: [{ role: "system", content: "You are a research analyst. You write answers that research like a search engine and explain like a teacher: direct, then causal — what happens, why it happens, and what it means. Every factual sentence that comes from the retrieved evidence must cite [n]. If the retrieved evidence does not answer part of the question, fill the gap from your own knowledge and mark those sentences inline with 'model knowledge' so the reader can tell what is sourced and what is not. If evidence conflicts, explicitly say evidence is mixed. Never invent URLs, sources, citations, or fake [n] references, and never present model-knowledge claims as cited facts. Do not reveal private reasoning." }, { role: "user", content: userMessageContent }] }, imageParts.length ? "vision" : technicalQuestion ? "code" : "general");
+    answer = typeof response.choices?.[0]?.message?.content === "string" ? response.choices[0].message.content : "The answer generator did not return usable content.";
+  }
   const citationAudit = auditCitationReferences(answer, evidence.length);
   if (citationAudit.invalidReferences.length) throw new Error(`Answer contained invalid citation reference(s): ${citationAudit.invalidReferences.join(", ")}`);
   const answerProvenance: "cited_sources" | "model_knowledge" | "technical_direct" = fromKnowledgeOnly ? "model_knowledge" : technicalQuestion ? "technical_direct" : "cited_sources";

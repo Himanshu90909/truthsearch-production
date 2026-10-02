@@ -33,6 +33,8 @@ See [`STARTUP.md`](STARTUP.md) for the full architecture map and the phased road
 
 The default web adapter is the public Wikipedia API and the default academic adapter is Semantic Scholar. These services may be rate-limited and are not a guarantee of broad web coverage, but they allow development and real queries without purchasing a search card. For stronger general-web coverage, configure Brave or Tavily using project secrets; if a selected paid provider is not configured, the session fails explicitly rather than falling back to fabricated data.
 
+**No-key extractive mode**: when no synthesis model is configured at all (`HF_API_KEY`, `GEMINI_API_KEY`, `XAI_API_KEY` all absent), research still completes — the answer is an extractive digest composed entirely of the top-ranked verified passages, each cited `[n]`, with a clear "Extractive answer" banner and a limitations note. No model knowledge is used, so nothing is unlabeled.
+
 ## Research boundary
 
 A session creates bounded query variants, calls live providers, canonicalizes and deduplicates URLs, fetches only public HTTP(S) pages, rejects private-network targets, extracts readable passages, scores source quality from observable signals, ranks evidence lexically, and asks the server-side LLM to synthesize only from the retrieved evidence. Pages that cannot be fetched are reported with per-reason counts (blocked, unsupported content type, no readable text, timed out) instead of failing silently. The interface exposes completed backend stages, source URLs, quality signals, and an evidence trail; it does not expose private chain-of-thought.

@@ -174,3 +174,32 @@ describe("research modes (SaaS upgrade slice)", () => {
     expect(classifyClaimStatuses(evidence, [])).toEqual(["verified", "partial", "verified"]);
   });
 });
+
+describe("extractive fallback (no-card mode)", () => {
+  it("composes a cited digest from passages when no synthesis model is configured", async () => {
+    const { extractiveFallbackAnswer, synthesisModelConfigured } = await import("./research");
+    expect(synthesisModelConfigured()).toBe(false);
+    const evidence = [
+      { claim: "rag", quote: "Retrieval-augmented generation grounds answers in retrieved documents.", url: "https://a.example/rag", title: "A: RAG guide", supportScore: 90, qualityScore: 80, sourceId: 0 },
+      { claim: "index", quote: "A vector index retrieves the most relevant passages per query.", url: "https://b.example/vec", title: "B: Vector search", supportScore: 85, qualityScore: 75, sourceId: 1 },
+      { claim: "limit", quote: "RAG reduces hallucination but depends on index quality.", url: "https://c.example/limits", title: "C: RAG limits", supportScore: 70, qualityScore: 60, sourceId: 2 },
+    ];
+    const answer = extractiveFallbackAnswer("What is retrieval augmented generation?", evidence, [], "quick");
+    expect(answer).toContain("Extractive answer");
+    expect(answer).toContain("[1]");
+    expect(answer).toContain("## Direct answer");
+    expect(answer).toContain("## Limitations");
+    // Every sentence must come from retrieved passages — no model knowledge.
+    expect(answer).not.toContain("model knowledge:");
+  });
+
+  it("references conflicts when sources disagree", async () => {
+    const { extractiveFallbackAnswer } = await import("./research");
+    const evidence = [
+      { claim: "x", quote: "quote-x", url: "https://x.example", title: "X", supportScore: 88, qualityScore: 70, sourceId: 0 },
+    ];
+    const conflicts = [{ description: "sources disagree on scope", supporting: [evidence[0]], contradicting: [] }];
+    const answer = extractiveFallbackAnswer("is x true?", evidence, conflicts, "verify");
+    expect(answer).toContain("sources disagree on scope");
+  });
+});
