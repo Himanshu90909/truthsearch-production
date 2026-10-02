@@ -193,6 +193,33 @@ describe("extractive fallback (no-card mode)", () => {
     expect(answer).not.toContain("model knowledge:");
   });
 
+  it("quotes attached documents so no-card deployments can answer document questions", async () => {
+    const { extractiveFallbackAnswer } = await import("./research");
+    const doc = "The Eiffel Tower is 330 metres tall and was completed in 1889.\n\nGustave Eiffel's company designed the tower for the 1889 World's Fair.\n\nParis receives millions of visitors every year who come to see it.";
+    const answer = extractiveFallbackAnswer("how tall is the eiffel tower", [], [], "quick", { contextText: doc });
+    expect(answer).toContain("## From your document");
+    expect(answer).toContain("330 metres");
+    expect(answer).toContain("not web sources");
+    expect(answer).not.toContain("[1]");
+  });
+
+  it("surfaces an honest note when images are attached without a vision model", async () => {
+    const { extractiveFallbackAnswer } = await import("./research");
+    const evidence = [{ claim: "x", quote: "quote-x", url: "https://x.example", title: "X", supportScore: 88, qualityScore: 70, sourceId: 0 }];
+    const answer = extractiveFallbackAnswer("what is this", evidence, [], "quick", { imageAnalysisNote: "No vision model is configured on this deployment." });
+    expect(answer).toContain("## Attached images");
+    expect(answer).toContain("No vision model is configured");
+  });
+
+  it("includes vision-model analysis of attached images in the extractive answer", async () => {
+    const { extractiveFallbackAnswer } = await import("./research");
+    const evidence = [{ claim: "x", quote: "quote-x", url: "https://x.example", title: "X", supportScore: 88, qualityScore: 70, sourceId: 0 }];
+    const answer = extractiveFallbackAnswer("what is this", evidence, [], "quick", { imageAnalysisText: "Image 1: A circuit diagram of a rectifier.\nText detected in the image: AC IN" });
+    expect(answer).toContain("## Attached image analysis");
+    expect(answer).toContain("rectifier");
+    expect(answer).toContain("image evidence, not web citations");
+  });
+
   it("references conflicts when sources disagree", async () => {
     const { extractiveFallbackAnswer } = await import("./research");
     const evidence = [

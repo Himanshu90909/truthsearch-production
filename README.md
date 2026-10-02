@@ -10,14 +10,13 @@ TruthSearch now has a fully on-device path for **Snapdragon-powered HP PCs** (Om
 
 ## Visual Intelligence (Oct 2026)
 
-**AI image understanding & explanation engine** — upload diagrams, charts, screenshots,
-code or handwritten notes and get evidence-grounded explanations: interactive region
-annotations, numbered steps, OCR, simplified SVG diagrams, visible-vs-inferred
-evidence blocks, follow-ups and TruthSearch citation verification. Provider-swappable
-vision chain (Gemini / HF / Groq / any OpenAI-compatible endpoint), structured JSON
-validated against schemas, untrusted coordinates sanitised, prompt-injection
-defended, private token-gated image storage with retention + full delete. See
-[VISUAL.md](VISUAL.md).
+**AI image & document understanding in the main chat** — attach a photo or a
+document (PDF/DOCX/XLSX/TXT/CSV/MD) to any question: the vision engine analyzes
+what is visible vs. inferred, reads text out of the image (OCR), and the thread
+answer reflects your attachment alongside cited web evidence. Schema-validated
+structured output, sanitized coordinates, prompt-injection defended, provider-swappable
+vision chain (Gemini / HF / Groq / any OpenAI-compatible endpoint), honest
+"not configured" states. See [VISUAL.md](VISUAL.md).
 
 ## Startup infrastructure — accounts, collections, analytics (Oct 2026)
 

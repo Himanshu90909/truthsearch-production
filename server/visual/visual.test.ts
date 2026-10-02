@@ -211,6 +211,49 @@ describe("full analysis pipeline (stub provider)", () => {
   });
 });
 
+function stubVisionResponseForAnalysis() {
+  // analyzeImageFromUrl uses global fetch twice: once for the attachment URL
+  // (stubbed per-test) and once for the vision provider — the provider call
+  // returns the valid analysis JSON.
+  const origFetch = globalThis.fetch;
+  const encoder = new TextEncoder();
+  vi.stubGlobal("fetch", vi.fn(async (input: unknown) => {
+    const url = typeof input === "string" ? input : String((input as { url?: string })?.url ?? "");
+    if (url.includes("stub.example.com")) {
+      return new Response(encoder.encode(JSON.stringify({ choices: [{ message: { role: "assistant", content: JSON.stringify(VALID_ANALYSIS) } }] })), { status: 200 });
+    }
+    return new Response(Buffer.from(TINY_PNG_B64, "base64"), { status: 200, headers: { "content-type": "image/png" } });
+  }));
+  void origFetch;
+}
+
+describe("in-chat image analysis from an attachment URL", () => {
+  it("fetches, validates, reads dimensions and returns an honest analysis", async () => {
+    stubVisionResponseForAnalysis();
+    const { analyzeImageFromUrl } = await import("./analysis");
+    const r = await analyzeImageFromUrl("https://cdn.example/attachments/a.png", "what is this?");
+    expect(r.summary).toContain("flowchart");
+    expect(r.provider).toBe("custom");
+    expect(r.ocrText).toContain("Build");
+    const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    expect(calls).toContain("https://cdn.example/attachments/a.png");
+    expect(calls.some((u) => u.includes("stub.example.com"))).toBe(true);
+  });
+
+  it("rejects non-image attachments instead of analyzing them", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(Buffer.from("<script>alert(1)</script>"), { status: 200 })));
+    const { analyzeImageFromUrl } = await import("./analysis");
+    await expect(analyzeImageFromUrl("https://cdn.example/attachments/a.png")).rejects.toThrow(/not a valid image/);
+  });
+
+  it("reads intrinsic dimensions from PNG, GIF and JPEG headers", async () => {
+    const { imageDimensions } = await import("./db");
+    expect(imageDimensions(Buffer.from(TINY_PNG_B64, "base64"))).toEqual({ width: 1, height: 1 });
+    const gif = Buffer.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x10, 0x00, 0x08, 0x00]);
+    expect(imageDimensions(gif)).toEqual({ width: 16, height: 8 });
+  });
+});
+
 describe("session privacy and ownership (memory fallback store)", () => {
   it("enforces cross-user isolation on sessions and token-gated image access", async () => {
     const upload = await createVisualUpload({ userId: 1, mime: "image/png", byteSize: 100, width: 10, height: 10, data: TINY_PNG_B64 });

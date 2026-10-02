@@ -14,6 +14,29 @@ import type { SanitizedRegion, VisualAnalysisParsed } from "./schema";
 // ---------------------------------------------------------------------------
 // Upload validation: magic-byte sniffing — the declared MIME is never trusted.
 // ---------------------------------------------------------------------------
+
+// Parse intrinsic pixel dimensions from image headers (PNG/GIF/JPEG/WebP).
+export function imageDimensions(buf: Buffer): { width: number; height: number } | null {
+  if (buf.length > 24 && buf[0] === 0x89 && buf.toString("latin1", 12, 16) === "IHDR") return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+  if (buf.length >= 10 && buf.toString("latin1", 0, 3) === "GIF") return { width: buf.readUInt16LE(6), height: buf.readUInt16LE(8) };
+  if (buf.length > 4 && buf[0] === 0xff && buf[1] === 0xd8) {
+    let off = 2;
+    while (off + 9 < buf.length) {
+      if (buf[off] !== 0xff) { off++; continue; }
+      const marker = buf[off + 1];
+      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) return { height: buf.readUInt16BE(off + 5), width: buf.readUInt16BE(off + 7) };
+      off += 2 + buf.readUInt16BE(off + 2);
+    }
+  }
+  if (buf.length > 30 && buf.toString("latin1", 0, 4) === "RIFF" && buf.toString("latin1", 8, 12) === "WEBP") {
+    const fourcc = buf.toString("latin1", 12, 16);
+    if (fourcc === "VP8 " && buf[23] === 0x9d) return { width: buf.readUInt16LE(26) & 0x3fff, height: buf.readUInt16LE(28) & 0x3fff };
+    if (fourcc === "VP8L") { const bits = buf.readUInt32LE(21); return { width: (bits & 0x3fff) + 1, height: ((bits >> 14) & 0x3fff) + 1 }; }
+    if (fourcc === "VP8X") return { width: buf.readUIntLE(24, 3) + 1, height: buf.readUIntLE(27, 3) + 1 };
+  }
+  return null;
+}
+
 export const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 export const ALLOWED_MIME = ["image/jpeg", "image/png", "image/webp", "image/gif"] as const;
 

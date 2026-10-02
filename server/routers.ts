@@ -10,7 +10,6 @@ import { LOCAL_SESSION_COOKIE, SESSION_TTL_MS, hashPassword, normalizeEmail, val
 import { storagePut } from "./storage";
 import { buildModeQueries, classifyIntent, conductResearch, makeQueries, RESEARCH_MODES } from "./research";
 import { providerRegistry, providerStatuses, providersForIntent } from "./providers/registry";
-import { visualRouter } from "./visual/router";
 
 const questionInput = z.object({ question: z.string().trim().min(8).max(1200) });
 
@@ -65,7 +64,6 @@ function rateKey(ctx: { user: { id: number } | null; req: { headers: Record<stri
 
 export const appRouter = router({
   system: systemRouter,
-  visual: visualRouter,
   auth: router({
     me: publicProcedure.query(opts => opts.ctx.user ? { id: opts.ctx.user.id, name: opts.ctx.user.name, email: opts.ctx.user.email, role: opts.ctx.user.role } : null),
     register: publicProcedure.input(z.object({ email: z.string().trim().max(320), password: z.string().min(8).max(200), name: z.string().trim().min(1).max(80).optional() })).mutation(async ({ input, ctx }) => {

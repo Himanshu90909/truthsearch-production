@@ -10,6 +10,7 @@ import { analysisSystemPrompt, analysisUserPrompt } from "./prompts";
 import type { ExplanationDepth, VisualMode } from "./schema";
 import { annotationOverlay } from "./annotation";
 import { diagramSvg } from "./diagram";
+import { sniffImageMime, imageDimensions, MAX_UPLOAD_BYTES } from "./db";
 import { z } from "zod";
 
 // Robust JSON extraction: models sometimes wrap JSON in fences or prose.
@@ -182,3 +183,26 @@ export async function runOcr(options: { imageDataUrl: string; signal?: AbortSign
 }
 
 export { VISUAL_MODES, EXPLANATION_DEPTHS };
+
+// In-chat visual understanding: fetch an uploaded attachment URL, validate it
+// like an upload, and run the full analysis pipeline on it. Throws honest
+// errors — the research flow relays them into the thread.
+export async function analyzeImageFromUrl(url: string, question?: string): Promise<{
+  summary: string; visible: string[]; inferred: string[]; uncertainties: string[]; ocrText: string; provider: string; model: string;
+}> {
+  const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+  if (!res.ok) throw new Error(`the image could not be loaded (${res.status})`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.byteLength > MAX_UPLOAD_BYTES) throw new Error("the image is too large to analyze (over 8 MB)");
+  const mime = sniffImageMime(buf);
+  if (!mime) throw new Error("the attachment is not a valid image");
+  const dims = imageDimensions(buf);
+  if (!dims) throw new Error("the image dimensions could not be read");
+  const outcome = await runAnalysis({
+    imageDataUrl: `data:${mime};base64,${buf.toString("base64")}`,
+    question, mode: "analyze", depth: "intermediate", language: "en",
+    width: dims.width, height: dims.height,
+  });
+  const ocrText = outcome.analysis.textRegions.map((t) => t.text).filter(Boolean).join("\n");
+  return { summary: outcome.analysis.summary, visible: outcome.analysis.visible, inferred: outcome.analysis.inferred, uncertainties: outcome.analysis.uncertainties, ocrText, provider: outcome.provider, model: outcome.model };
+}
