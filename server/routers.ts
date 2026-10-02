@@ -18,7 +18,8 @@ const questionInput = z.object({ question: z.string().trim().min(8).max(1200) })
 // the fire-and-forget behaviour (standalone server with a real database).
 const SYNC_RESEARCH = process.env.SYNC_RESEARCH ? process.env.SYNC_RESEARCH === "true" : process.env.VERCEL === "1";
 
-async function runResearch(id: number, question: string, userId: number | null, userAttachments: { contextText?: string; imageUrls?: string[] } | undefined, mode: "quick" | "deep" | "academic" | "verify") {
+import type { ResearchMode } from "./research";
+async function runResearch(id: number, question: string, userId: number | null, userAttachments: { contextText?: string; imageUrls?: string[] } | undefined, mode: ResearchMode) {
   const startedAt = Date.now();
   try {
     await updateSession(id, { status: "researching" });

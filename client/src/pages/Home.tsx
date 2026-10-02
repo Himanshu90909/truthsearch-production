@@ -48,13 +48,14 @@ const stageIcons = [BookOpen, Search, FileText, GitBranch, ShieldCheck, Check];
 type Source = { id: number; title: string; url: string; canonicalUrl?: string; domain: string; sourceType: string; qualityScore: number; author?: string | null; publicationDate?: string | null };
 type Evidence = { quote?: string; url?: string; title?: string; supportScore?: number; qualityScore?: number; claim?: string };
 type Conflict = { description: string; supporting?: Array<{ url?: string; title?: string }>; contradicting?: Array<{ url?: string; title?: string }> };
-type ResearchMode = "quick" | "deep" | "academic" | "verify";
+type ResearchMode = "quick" | "deep" | "academic" | "verify" | "image";
 type ClaimStatus = "verified" | "partial" | "conflicting" | "insufficient";
 const modes: Array<{ id: ResearchMode; label: string; hint: string }> = [
   { id: "quick", label: "Quick search", hint: "Fast multi-source answer" },
   { id: "deep", label: "Deep research", hint: "More queries, more sources" },
   { id: "academic", label: "Academic", hint: "Papers and scholarly sources" },
   { id: "verify", label: "Verify a claim", hint: "Fact-check with a verdict" },
+  { id: "image", label: "Generate image", hint: "Create a picture from a prompt" },
 ];
 const statusLabels: Record<ClaimStatus, string> = { verified: "Verified", partial: "Partially supported", conflicting: "Conflicting evidence", insufficient: "Insufficient evidence" };
 type Attachment = { id: string; file: File; preview?: string; error?: string };

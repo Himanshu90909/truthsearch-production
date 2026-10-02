@@ -2,6 +2,7 @@ import { invokeLLM } from "./_core/llm";
 import { crossEncoderRank, denseRank } from "./ml";
 import { analyzeImageFromUrl } from "./visual/analysis";
 import { visionConfigured } from "./visual/providers";
+import { generateResearchImage } from "./visual/generate";
 import { providerRegistry, providersForIntent } from "./providers/registry";
 
 export type ProviderName = "brave" | "tavily" | "semanticScholar" | "crossref" | "openalex" | "europePmc" | "wikipedia" | "arxiv" | "github" | "stackExchange" | "openLibrary" | "wikidata" | "worldBank" | "dataGov";
@@ -15,13 +16,14 @@ const maxQueries = Math.min(Number(env("MAX_SEARCH_QUERIES") || 8), 20);
 const maxSources = Math.min(Number(env("MAX_SOURCES") || 24), 50);
 
 // Research modes (user-selectable, master-prompt slice: Quick / Deep / Academic / Verify).
-export const RESEARCH_MODES = ["quick", "deep", "academic", "verify"] as const;
+export const RESEARCH_MODES = ["quick", "deep", "academic", "verify", "image"] as const;
 export type ResearchMode = (typeof RESEARCH_MODES)[number];
 export const MODE_CONFIG: Record<ResearchMode, { academicQueries: boolean; sourceCap: number; evidenceCap: number; label: string }> = {
   quick: { academicQueries: false, sourceCap: 12, evidenceCap: 8, label: "Quick search" },
   deep: { academicQueries: true, sourceCap: 36, evidenceCap: 14, label: "Deep research" },
   academic: { academicQueries: true, sourceCap: 24, evidenceCap: 12, label: "Academic research" },
   verify: { academicQueries: true, sourceCap: 24, evidenceCap: 12, label: "Fact verification" },
+  image: { academicQueries: false, sourceCap: 0, evidenceCap: 0, label: "Image generation" },
 };
 
 export function buildModeQueries(question: string, mode: ResearchMode): string[] {
@@ -490,6 +492,36 @@ export type UserAttachments = { contextText?: string; imageUrls?: string[] };
 
 export async function conductResearch(question: string, onProgress: (p: ResearchProgress) => void, userAttachments?: UserAttachments, mode: ResearchMode = "quick") {
   if (question.trim().length < 8 || question.length > 1200) throw new Error("Question must be between 8 and 1,200 characters.");
+  // Image generation mode: create a picture from the prompt instead of web
+  // research. Generated images are always labeled as AI art, never evidence.
+  if (mode === "image") {
+    onProgress({ stage: "planning", detail: "Preparing the image generation prompt", at: Date.now() });
+    onProgress({ stage: "searching", detail: "Generating the image — this can take up to a minute", at: Date.now() });
+    let generated;
+    try {
+      generated = await generateResearchImage(question);
+    } catch (error) {
+      throw new Error(error instanceof Error ? error.message : "Image generation failed for an unknown reason.");
+    }
+    onProgress({ stage: "verifying", detail: `Image generated with ${generated.provider}`, at: Date.now() });
+    const answer = [
+      `> **Generated image** — created by the ${generated.provider} image model from your prompt. It is AI art, not researched or fact-checked.`,
+      "",
+      `![${generated.prompt.replace(/[[\]]/g, "").slice(0, 80)}](${generated.url})`,
+      "",
+      `**Prompt used:** ${generated.prompt}`,
+      "",
+      `**Model:** ${generated.provider} (${generated.model})`,
+      "",
+      "Want a different style or subject? Ask a follow-up describing exactly what to change.",
+    ].join("\n");
+    onProgress({ stage: "completed", detail: "Image generation completed", at: Date.now() });
+    return {
+      answer,
+      plan: { question, queries: [generated.prompt], mode, modeLabel: MODE_CONFIG.image.label, claimStatuses: [] as ClaimStatus[], claimSummary: { verified: 0, partial: 0, conflicting: 0, insufficient: 0 }, providers: [generated.provider], bounded: true, evidence: [], conflicts: [], citationAudit: { invalidReferences: [] as number[] }, answerProvenance: "model_knowledge" as const },
+      sources: [], evidence: [], conflicts: [], citationAudit: { invalidReferences: [] as number[] }, progress: [] as ResearchProgress[],
+    };
+  }
   const requested = env("SEARCH_PROVIDER");
   const paidEnabled = env("ENABLE_PAID_SEARCH") === "true";
   const primary = (paidEnabled && (requested === "brave" || requested === "tavily") ? requested : "wikipedia") as ProviderName;

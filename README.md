@@ -15,7 +15,7 @@ document (PDF/DOCX/XLSX/TXT/CSV/MD) to any question: the vision engine analyzes
 what is visible vs. inferred, reads text out of the image (OCR), and the thread
 answer reflects your attachment alongside cited web evidence. Schema-validated
 structured output, sanitized coordinates, prompt-injection defended, provider-swappable
-vision chain (Gemini / HF / Groq / any OpenAI-compatible endpoint), honest
+vision chain (Gemini / HF / Groq / any OpenAI-compatible endpoint), plus **Generate image** mode in the composer (keyless), honest
 "not configured" states. See [VISUAL.md](VISUAL.md).
 
 ## Startup infrastructure — accounts, collections, analytics (Oct 2026)

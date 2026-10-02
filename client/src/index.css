@@ -515,3 +515,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
 .auth-switch { width: 100%; margin-top: 14px; padding: 9px 0; border: 0; background: transparent; color: #20808D; font-size: 12.5px; font-weight: 500; }
 .auth-switch:hover { text-decoration: underline; }
 .app.dark .auth-switch { color: #20B8CD; }
+
+/* Generated images inside thread answers */
+.answer-copy img { max-width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--border); margin: 10px 0; display: block; }

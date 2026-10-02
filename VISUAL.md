@@ -24,6 +24,13 @@ text is analyzed the same way.
    that (no fake analysis). With no synthesis model, image analysis and
    document quotes still appear (extractive mode).
 
+## Image generation (in-chat)
+
+The composer's **Generate image** mode creates a picture from your prompt in the
+same thread. Provider chain: the Base44 image service (GPT Image 2) when
+configured, else Pollinations (keyless). Generated images are always labeled as
+AI art — never research, never evidence, no fabricated citations.
+
 ## Vision provider chain (swappable, no code changes)
 
 1. `VISION_API_URL` + `VISION_API_KEY` + `VISION_MODEL` (any OpenAI-compatible endpoint)
@@ -32,6 +39,9 @@ text is analyzed the same way.
 4. `GROQ_API_KEY`/`XAI_API_KEY` → llama-4-scout (`VISION_MODEL_GROQ`)
 
 ## Modules
+
+`server/visual/generate.ts` — in-chat image generation (prompt extraction,
+provider chain, byte validation, persistence with deterministic-URL fallback).
 
 `server/visual/{schema,providers,prompts,analysis,annotation,diagram,db}.ts` —
 zod-validated analysis JSON, coordinate sanitisation, deterministic SVG

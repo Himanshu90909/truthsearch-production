@@ -211,6 +211,8 @@ describe("full analysis pipeline (stub provider)", () => {
   });
 });
 
+function encoder0(s: string) { return new TextEncoder().encode(s); }
+
 function stubVisionResponseForAnalysis() {
   // analyzeImageFromUrl uses global fetch twice: once for the attachment URL
   // (stubbed per-test) and once for the vision provider — the provider call
@@ -226,6 +228,45 @@ function stubVisionResponseForAnalysis() {
   }));
   void origFetch;
 }
+
+describe("image generation (in-chat)", () => {
+  it("extracts a clean prompt from generation phrasing", async () => {
+    const { extractImagePrompt } = await import("./generate");
+    expect(extractImagePrompt("generate an image of a cat on the moon")).toBe("a cat on the moon");
+    expect(extractImagePrompt("Please create me a picture showing a red fox in snow")).toBe("a red fox in snow");
+    expect(extractImagePrompt("what is retrieval augmented generation")).toBe("what is retrieval augmented generation");
+  });
+
+  it("generates via the keyless provider, validates the bytes and persists when storage is available", async () => {
+    const encoder = new TextEncoder();
+    const png = Buffer.from(TINY_PNG_B64, "base64");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(png, { status: 200, headers: { "content-type": "image/png" } })));
+    const { generateResearchImage } = await import("./generate");
+    const r = await generateResearchImage("generate an image of a flowchart");
+    expect(r.provider).toBe("Pollinations");
+    expect(r.prompt).toBe("a flowchart");
+    expect(r.url).toMatch(/image\.pollinations\.ai\/prompt\/a%20flowchart/);
+  });
+
+  it("fails honestly when the image service returns junk", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(encoder0("<svg>bad</svg>"), { status: 200 })));
+    const { generateResearchImage } = await import("./generate");
+    await expect(generateResearchImage("draw a cat")).rejects.toThrow(/not a valid image|did not return a valid image/);
+  });
+
+  it("image-mode research produces a labeled generated-image answer with no fabricated citations", async () => {
+    const png = Buffer.from(TINY_PNG_B64, "base64");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(png, { status: 200, headers: { "content-type": "image/png" } })));
+    const { conductResearch } = await import("../research");
+    const result = await conductResearch("generate an image of a mountain sunrise", () => {}, undefined, "image");
+    expect(result.sources).toEqual([]);
+    expect(result.evidence).toEqual([]);
+    expect(result.answer).toContain("**Generated image**");
+    expect(result.answer).toMatch(/!\[[^\]]*\]\(/);
+    expect(result.answer).toContain("not researched or fact-checked");
+    expect(result.answer).toContain("a mountain sunrise");
+  });
+});
 
 describe("in-chat image analysis from an attachment URL", () => {
   it("fetches, validates, reads dimensions and returns an honest analysis", async () => {
