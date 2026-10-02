@@ -100,7 +100,7 @@ observability → analytics events, latency metrics, provider health checks
 - [x] Collections to organize research
 - [x] Analytics events + admin metrics
 - [x] Rate limiting
-- [ ] Wire a managed MySQL/Postgres in production (set `DATABASE_URL`)
+- [x] Wire a managed Postgres in production — **done: Neon Postgres via Vercel integration, self-healing schema bootstrap (Oct 2026)**
 - [ ] Terms of service + privacy policy pages (needed before public beta)
 
 ### Phase 2 — Research platform

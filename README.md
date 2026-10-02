@@ -16,7 +16,7 @@ TruthSearch now runs as a real product, not just a demo:
 - **Collections** — organize research into named collections from the sidebar (create, assign sessions, delete). Collections are per-account and their counts are queried with a real SQL join.
 - **Analytics events** — typed usage events (`research.started/completed/failed`, `account.registered`, …) with latency and source-count metadata, aggregated by an owner-only `admin.metrics` endpoint (authorized by admin role or `ADMIN_METRICS_TOKEN`).
 - **Usage guards** — sliding-window hourly rate limits on research runs (anonymous 8/h, signed-in 40/h) to protect provider quotas before monetization.
-- **Database migrations** — `drizzle/0002_*.sql` adds `local_sessions`, `collections`, `analytics_events`, plus `users.passwordHash` and `research_sessions.collectionId`. Run `pnpm db:push` when `DATABASE_URL` is set.
+- **Durable Postgres storage** — all app data now lives in **Neon Postgres** (free tier via the Vercel integration; `DATABASE_URL` auto-attached). The server bootstraps its schema idempotently on first request after a cold start — no manual migration step. Tables left over with an incompatible shape are detected via `information_schema` and recreated automatically, so cold starts are always self-healing.
 
 See [`STARTUP.md`](STARTUP.md) for the full architecture map and the phased roadmap (research platform → learning system → business infrastructure → scale).
 
