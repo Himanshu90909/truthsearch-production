@@ -8,63 +8,88 @@ import { SESSION_TTL_MS, newSessionToken } from "./auth-local";
 let _db: ReturnType<typeof drizzle> | null = null;
 let _schemaReady: Promise<void> | null = null;
 
-// Idempotent schema bootstrap: the serverless deployment creates its tables on
-// first request after a cold start, so no manual migration step is required.
-const SCHEMA_DDL = `
-DO $$ BEGIN
-  CREATE TYPE "role" AS ENUM ('user', 'admin');
-EXCEPTION WHEN duplicate_object THEN null; END $$;
--- @next
-DO $$ BEGIN
-  CREATE TYPE "session_status" AS ENUM ('queued', 'researching', 'completed', 'failed');
-EXCEPTION WHEN duplicate_object THEN null; END $$;
--- @next
-DO $$ BEGIN
-  CREATE TYPE "message_role" AS ENUM ('user', 'assistant', 'system');
-EXCEPTION WHEN duplicate_object THEN null; END $$;
--- @next
-DO $$ BEGIN
-  CREATE TYPE "query_status" AS ENUM ('planned', 'searched', 'failed');
-EXCEPTION WHEN duplicate_object THEN null; END $$;
--- @next
-DO $$ BEGIN
-  CREATE TYPE "verification_status" AS ENUM ('verified', 'mixed', 'unsupported');
-EXCEPTION WHEN duplicate_object THEN null; END $$;
--- @next
--- @next
-CREATE TABLE IF NOT EXISTS "users" ("id" serial PRIMARY KEY NOT NULL, "openId" varchar(64) NOT NULL UNIQUE, "name" text, "email" varchar(320), "loginMethod" varchar(64), "role" "role" DEFAULT 'user' NOT NULL, "passwordHash" text, "createdAt" timestamp DEFAULT now() NOT NULL, "updatedAt" timestamp DEFAULT now() NOT NULL, "lastSignedIn" timestamp DEFAULT now() NOT NULL);
--- @next
-CREATE TABLE IF NOT EXISTS "research_sessions" ("id" serial PRIMARY KEY NOT NULL, "userId" integer, "title" varchar(500) NOT NULL, "question" text NOT NULL, "status" "session_status" DEFAULT 'queued' NOT NULL, "answer" text, "plan" json, "error" text, "collectionId" integer, "createdAt" timestamp DEFAULT now() NOT NULL, "updatedAt" timestamp DEFAULT now() NOT NULL);
--- @next
-CREATE TABLE IF NOT EXISTS "research_messages" ("id" serial PRIMARY KEY NOT NULL, "sessionId" integer NOT NULL, "role" "message_role" NOT NULL, "content" text NOT NULL, "createdAt" timestamp DEFAULT now() NOT NULL);
--- @next
-CREATE TABLE IF NOT EXISTS "research_queries" ("id" serial PRIMARY KEY NOT NULL, "sessionId" integer NOT NULL, "query" varchar(1000) NOT NULL, "provider" varchar(64) NOT NULL, "status" "query_status" DEFAULT 'planned' NOT NULL, "resultCount" integer DEFAULT 0 NOT NULL, "createdAt" timestamp DEFAULT now() NOT NULL);
--- @next
-CREATE TABLE IF NOT EXISTS "research_sources" ("id" serial PRIMARY KEY NOT NULL, "sessionId" integer NOT NULL, "queryId" integer, "url" varchar(2048) NOT NULL, "canonicalUrl" varchar(2048) NOT NULL, "title" text NOT NULL, "domain" varchar(255) NOT NULL, "author" text, "publicationDate" varchar(128), "sourceType" varchar(64) NOT NULL, "qualityScore" integer NOT NULL, "content" text, "retrievedAt" timestamp DEFAULT now() NOT NULL);
--- @next
-CREATE TABLE IF NOT EXISTS "research_passages" ("id" serial PRIMARY KEY NOT NULL, "sourceId" integer NOT NULL, "passageIndex" integer NOT NULL, "text" text NOT NULL, "tokenCount" integer NOT NULL, "bm25Score" integer, "denseScore" integer, "fusedScore" integer, "rerankScore" integer);
--- @next
-CREATE TABLE IF NOT EXISTS "research_claims" ("id" serial PRIMARY KEY NOT NULL, "sessionId" integer NOT NULL, "claim" text NOT NULL, "confidence" integer NOT NULL, "verificationStatus" "verification_status" NOT NULL);
--- @next
-CREATE TABLE IF NOT EXISTS "research_evidence" ("id" serial PRIMARY KEY NOT NULL, "claimId" integer NOT NULL, "passageId" integer NOT NULL, "supportScore" integer NOT NULL, "exactQuote" text NOT NULL);
--- @next
-CREATE TABLE IF NOT EXISTS "research_contradictions" ("id" serial PRIMARY KEY NOT NULL, "sessionId" integer NOT NULL, "claimId" integer NOT NULL, "description" text NOT NULL, "sourceIds" json NOT NULL);
--- @next
-CREATE TABLE IF NOT EXISTS "research_citations" ("id" serial PRIMARY KEY NOT NULL, "claimId" integer NOT NULL, "sourceId" integer NOT NULL, "verified" integer DEFAULT 0 NOT NULL);
--- @next
-CREATE TABLE IF NOT EXISTS "local_sessions" ("id" serial PRIMARY KEY NOT NULL, "token" varchar(128) NOT NULL UNIQUE, "userId" integer NOT NULL, "createdAt" timestamp DEFAULT now() NOT NULL, "expiresAt" timestamp NOT NULL);
--- @next
-CREATE TABLE IF NOT EXISTS "collections" ("id" serial PRIMARY KEY NOT NULL, "userId" integer NOT NULL, "name" varchar(120) NOT NULL, "createdAt" timestamp DEFAULT now() NOT NULL);
--- @next
-CREATE TABLE IF NOT EXISTS "analytics_events" ("id" serial PRIMARY KEY NOT NULL, "userId" integer, "type" varchar(64) NOT NULL, "meta" json, "createdAt" timestamp DEFAULT now() NOT NULL);
-`;
+// ---------------------------------------------------------------------------
+// Idempotent, self-healing schema bootstrap. Creates every table on first
+// request after a cold start, and if a table pre-exists with an incompatible
+// shape (e.g. leftover from an aborted earlier setup), it is dropped and
+// recreated. Tables with the correct shape are never touched.
+// ---------------------------------------------------------------------------
+const TYPE_STMTS = [
+  `DO $$ BEGIN CREATE TYPE "role" AS ENUM ('user', 'admin'); EXCEPTION WHEN duplicate_object THEN null; END $$;`,
+  `DO $$ BEGIN CREATE TYPE "session_status" AS ENUM ('queued', 'researching', 'completed', 'failed'); EXCEPTION WHEN duplicate_object THEN null; END $$;`,
+  `DO $$ BEGIN CREATE TYPE "message_role" AS ENUM ('user', 'assistant', 'system'); EXCEPTION WHEN duplicate_object THEN null; END $$;`,
+  `DO $$ BEGIN CREATE TYPE "query_status" AS ENUM ('planned', 'searched', 'failed'); EXCEPTION WHEN duplicate_object THEN null; END $$;`,
+  `DO $$ BEGIN CREATE TYPE "verification_status" AS ENUM ('verified', 'mixed', 'unsupported'); EXCEPTION WHEN duplicate_object THEN null; END $$;`,
+];
+
+const TABLE_COLUMNS: Record<string, string[]> = {
+  users: ["id", "openId", "name", "email", "loginMethod", "role", "passwordHash", "createdAt", "updatedAt", "lastSignedIn"],
+  research_sessions: ["id", "userId", "title", "question", "status", "answer", "plan", "error", "collectionId", "createdAt", "updatedAt"],
+  research_messages: ["id", "sessionId", "role", "content", "createdAt"],
+  research_queries: ["id", "sessionId", "query", "provider", "status", "resultCount", "createdAt"],
+  research_sources: ["id", "sessionId", "queryId", "url", "canonicalUrl", "title", "domain", "author", "publicationDate", "sourceType", "qualityScore", "content", "retrievedAt"],
+  research_passages: ["id", "sourceId", "passageIndex", "text", "tokenCount", "bm25Score", "denseScore", "fusedScore", "rerankScore"],
+  research_claims: ["id", "sessionId", "claim", "confidence", "verificationStatus"],
+  research_evidence: ["id", "claimId", "passageId", "supportScore", "exactQuote"],
+  research_contradictions: ["id", "sessionId", "claimId", "description", "sourceIds"],
+  research_citations: ["id", "claimId", "sourceId", "verified"],
+  local_sessions: ["id", "token", "userId", "createdAt", "expiresAt"],
+  collections: ["id", "userId", "name", "createdAt"],
+  analytics_events: ["id", "userId", "type", "meta", "createdAt"],
+};
+
+const CREATE_STMTS: Record<string, string> = {
+  users: `CREATE TABLE IF NOT EXISTS "users" ("id" serial PRIMARY KEY NOT NULL, "openId" varchar(64) NOT NULL UNIQUE, "name" text, "email" varchar(320), "loginMethod" varchar(64), "role" "role" DEFAULT 'user' NOT NULL, "passwordHash" text, "createdAt" timestamp DEFAULT now() NOT NULL, "updatedAt" timestamp DEFAULT now() NOT NULL, "lastSignedIn" timestamp DEFAULT now() NOT NULL);`,
+  research_sessions: `CREATE TABLE IF NOT EXISTS "research_sessions" ("id" serial PRIMARY KEY NOT NULL, "userId" integer, "title" varchar(500) NOT NULL, "question" text NOT NULL, "status" "session_status" DEFAULT 'queued' NOT NULL, "answer" text, "plan" json, "error" text, "collectionId" integer, "createdAt" timestamp DEFAULT now() NOT NULL, "updatedAt" timestamp DEFAULT now() NOT NULL);`,
+  research_messages: `CREATE TABLE IF NOT EXISTS "research_messages" ("id" serial PRIMARY KEY NOT NULL, "sessionId" integer NOT NULL, "role" "message_role" NOT NULL, "content" text NOT NULL, "createdAt" timestamp DEFAULT now() NOT NULL);`,
+  research_queries: `CREATE TABLE IF NOT EXISTS "research_queries" ("id" serial PRIMARY KEY NOT NULL, "sessionId" integer NOT NULL, "query" varchar(1000) NOT NULL, "provider" varchar(64) NOT NULL, "status" "query_status" DEFAULT 'planned' NOT NULL, "resultCount" integer DEFAULT 0 NOT NULL, "createdAt" timestamp DEFAULT now() NOT NULL);`,
+  research_sources: `CREATE TABLE IF NOT EXISTS "research_sources" ("id" serial PRIMARY KEY NOT NULL, "sessionId" integer NOT NULL, "queryId" integer, "url" varchar(2048) NOT NULL, "canonicalUrl" varchar(2048) NOT NULL, "title" text NOT NULL, "domain" varchar(255) NOT NULL, "author" text, "publicationDate" varchar(128), "sourceType" varchar(64) NOT NULL, "qualityScore" integer NOT NULL, "content" text, "retrievedAt" timestamp DEFAULT now() NOT NULL);`,
+  research_passages: `CREATE TABLE IF NOT EXISTS "research_passages" ("id" serial PRIMARY KEY NOT NULL, "sourceId" integer NOT NULL, "passageIndex" integer NOT NULL, "text" text NOT NULL, "tokenCount" integer NOT NULL, "bm25Score" integer, "denseScore" integer, "fusedScore" integer, "rerankScore" integer);`,
+  research_claims: `CREATE TABLE IF NOT EXISTS "research_claims" ("id" serial PRIMARY KEY NOT NULL, "sessionId" integer NOT NULL, "claim" text NOT NULL, "confidence" integer NOT NULL, "verificationStatus" "verification_status" NOT NULL);`,
+  research_evidence: `CREATE TABLE IF NOT EXISTS "research_evidence" ("id" serial PRIMARY KEY NOT NULL, "claimId" integer NOT NULL, "passageId" integer NOT NULL, "supportScore" integer NOT NULL, "exactQuote" text NOT NULL);`,
+  research_contradictions: `CREATE TABLE IF NOT EXISTS "research_contradictions" ("id" serial PRIMARY KEY NOT NULL, "sessionId" integer NOT NULL, "claimId" integer NOT NULL, "description" text NOT NULL, "sourceIds" json NOT NULL);`,
+  research_citations: `CREATE TABLE IF NOT EXISTS "research_citations" ("id" serial PRIMARY KEY NOT NULL, "claimId" integer NOT NULL, "sourceId" integer NOT NULL, "verified" integer DEFAULT 0 NOT NULL);`,
+  local_sessions: `CREATE TABLE IF NOT EXISTS "local_sessions" ("id" serial PRIMARY KEY NOT NULL, "token" varchar(128) NOT NULL UNIQUE, "userId" integer NOT NULL, "createdAt" timestamp DEFAULT now() NOT NULL, "expiresAt" timestamp NOT NULL);`,
+  collections: `CREATE TABLE IF NOT EXISTS "collections" ("id" serial PRIMARY KEY NOT NULL, "userId" integer NOT NULL, "name" varchar(120) NOT NULL, "createdAt" timestamp DEFAULT now() NOT NULL);`,
+  analytics_events: `CREATE TABLE IF NOT EXISTS "analytics_events" ("id" serial PRIMARY KEY NOT NULL, "userId" integer, "type" varchar(64) NOT NULL, "meta" json, "createdAt" timestamp DEFAULT now() NOT NULL);`,
+};
+
+async function ensureSchema(db: NonNullable<ReturnType<typeof drizzle>>): Promise<void> {
+  for (const stmt of TYPE_STMTS) {
+    try { await db.execute(sql.raw(stmt)); } catch (error) { if (!/already exists/i.test(String(error))) console.warn("[Database] Type bootstrap failed:", error); }
+  }
+  for (const [table, stmt] of Object.entries(CREATE_STMTS)) {
+    try { await db.execute(sql.raw(stmt)); } catch (error) { console.warn(`[Database] Create failed for ${table}:`, error); }
+  }
+  // Shape check: any table that exists with incompatible columns is dropped and recreated.
+  try {
+    const result = await db.execute(sql`SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public'`);
+    const rows = (Array.isArray(result) ? result : (result as unknown as { rows?: Array<{ table_name: string; column_name: string }> }).rows) || [];
+    const actual = new Map<string, Set<string>>();
+    for (const row of rows) {
+      if (!actual.has(row.table_name)) actual.set(row.table_name, new Set());
+      actual.get(row.table_name)!.add(row.column_name);
+    }
+    for (const [table, expected] of Object.entries(TABLE_COLUMNS)) {
+      const cols = actual.get(table);
+      if (!cols || !cols.size) continue; // table was just created fresh
+      const missing = expected.filter((col) => !cols.has(col));
+      if (missing.length) {
+        console.warn(`[Database] Table ${table} has incompatible shape (missing: ${missing.join(", ")}); recreating it.`);
+        await db.execute(sql.raw(`DROP TABLE IF EXISTS "${table}" CASCADE;`));
+        await db.execute(sql.raw(CREATE_STMTS[table]));
+      }
+    }
+  } catch (error) {
+    console.warn("[Database] Schema shape check failed:", error);
+  }
+}
 
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
       _db = drizzle(neon(process.env.DATABASE_URL));
-      const statements = SCHEMA_DDL.split("-- @next").map((x) => x.trim()).filter(Boolean);
-      _schemaReady = (async () => { for (const stmt of statements) { try { await _db.execute(sql.raw(stmt)); } catch (error) { if (!/already exists/i.test(String(error))) console.warn("[Database] Bootstrap statement failed:", error); } } })();
+      _schemaReady = ensureSchema(_db);
     } catch (error) { console.warn("[Database] Failed to connect:", error); }
   }
   if (_db && _schemaReady) await _schemaReady;
