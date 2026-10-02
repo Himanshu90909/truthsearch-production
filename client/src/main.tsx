@@ -38,76 +38,12 @@ queryClient.getMutationCache().subscribe(event => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// Research API routing: the research pipeline runs on the Base44 backend
-// (public function), so research.start/followUp/get are served directly from
-// it instead of the tRPC origin. The function performs the whole pipeline
-// synchronously (search + causal synthesis); results are cached in-memory
-// and returned to the tRPC layer in its response envelope, so every other
-// component keeps using the typed tRPC client unchanged.
-const RESEARCH_FUNCTION_URL = "https://solene-7c76de54.base44.app/functions/truthsearchResearch";
-const researchCache = new Map<number, Record<string, unknown>>();
-let researchNextId = 900001;
-
-type ResearchInput = { id?: number; question?: string; contextText?: string; imageUrls?: string[] };
-
-async function runResearch(question: string, contextText?: string, imageUrls?: string[]): Promise<number> {
-  const res = await globalThis.fetch(RESEARCH_FUNCTION_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question, contextText, imageUrls }),
-  });
-  if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    throw new Error(`Research failed (HTTP ${res.status}) ${detail.slice(0, 160)}`);
-  }
-  const payload = (await res.json()) as { session?: { status?: string; error?: string | null; answer?: string | null } };
-  if (!payload?.session || payload.session.status === "failed" || !payload.session.answer) {
-    throw new Error(payload?.session?.error || "Research failed — no answer was produced.");
-  }
-  // The Base44 function returns sources/claims at the top level; the session UI
-  // reads plan.evidence for the confidence bar and claim chips — synthesize it.
-  const stored = payload as unknown as {
-    sources?: Array<Record<string, unknown>>;
-    session?: { plan?: Record<string, unknown> };
-  };
-  const session = stored.session ?? {};
-  session.plan = { ...(session.plan ?? {}), ...(session.plan?.evidence ? {} : {
-    evidence: (stored.sources ?? []).slice(0, 8).map((s) => ({
-      title: (s.title as string) || (s.domain as string) || "Source",
-      claim: (s.title as string) || "",
-      quote: String(s.content ?? s.title ?? "").replace(/\s+/g, " ").slice(0, 240),
-      supportScore: (s.qualityScore as number) || 70,
-      qualityScore: (s.qualityScore as number) || 70,
-      url: (s.url as string) || "",
-      domain: (s.domain as string) || "",
-    })),
-  }) };
-  const id = researchNextId++;
-  researchCache.set(id, stored as unknown as Record<string, unknown>);
-  return id;
-}
-
 // tRPC routing: httpBatchLink batches several procedures into ONE request
 // (comma-separated paths like /research.providers,research.plan?batch=1),
 // so every local response must contain one result entry per procedure, in
 // the same order as the request paths.
-const LOCAL_GET_PROC = /^research\.(providers|plan|list|get)$|^auth\.(me|session)$/;
-const LOCAL_POST_PROC = /^research\.(start|followUp|attachImage|extractDocument)$/;
-
-const PROVIDERS_PAYLOAD = {
-  web: "wikipedia",
-  academic: "arxiv",
-  paidSearchEnabled: false,
-  configured: true,
-  knowledge: [
-    { name: "wikipedia", category: "web", enabled: true, status: "healthy" },
-    { name: "arxiv", category: "academic", enabled: true, status: "healthy" },
-    { name: "europepmc", category: "academic", enabled: true, status: "healthy" },
-    { name: "gemini", category: "synthesis", enabled: true, status: "healthy" },
-    { name: "groq", category: "synthesis", enabled: true, status: "healthy" },
-  ],
-};
+const LOCAL_GET_PROC = /$^/; // no GET procedures are handled client-side
+const LOCAL_POST_PROC = /^research\.(attachImage|extractDocument)$/;
 
 const trpcResponse = (results: unknown[]) =>
   new Response(JSON.stringify(results), { status: 200, headers: { "Content-Type": "application/json" } });
@@ -160,23 +96,8 @@ function researchTrpcFetch(input: RequestInfo | URL, init?: RequestInit): Promis
     const results: unknown[] = [];
     for (let i = 0; i < procedures.length; i++) {
       const proc = procedures[i];
-      const parsed = opInput(i) as ResearchInput & { filename?: string; dataUrl?: string };
+      const parsed = opInput(i) as { filename?: string; dataUrl?: string };
       try {
-        if (method === "POST" && (proc === "research.start" || proc === "research.followUp")) {
-          let question = parsed.question || "";
-          let contextText = parsed.contextText;
-          if (proc === "research.followUp" && parsed.id) {
-            const previous = researchCache.get(parsed.id) as { session?: { question?: string; answer?: string | null } } | undefined;
-            question = `${previous?.session?.question ?? ""}\nFollow-up: ${question}`.trim();
-            if (previous?.session?.answer) {
-              contextText = `Previous verified answer:\n${previous.session.answer.slice(0, 12000)}`;
-            }
-          }
-          const id = await runResearch(question, contextText, parsed.imageUrls);
-          results.push({ result: { data: { json: { id } } } });
-          continue;
-        }
-
         if (method === "POST" && proc === "research.attachImage") {
           const dataUrl = parsed.dataUrl || "";
           const valid =
@@ -184,7 +105,7 @@ function researchTrpcFetch(input: RequestInfo | URL, init?: RequestInit): Promis
           if (!valid) {
             results.push({ error: { message: "Image could not be read. Try a JPG, PNG, or WebP under 5 MB." } });
           } else {
-            // The Base44 research function accepts data URIs directly — no upload needed.
+            // The research pipeline accepts data URIs directly — no server upload needed.
             results.push({ result: { data: { json: { url: dataUrl } } } });
           }
           continue;
@@ -240,55 +161,6 @@ function researchTrpcFetch(input: RequestInfo | URL, init?: RequestInit): Promis
             continue;
           }
           results.push({ result: { data: { json: { text: clean.slice(0, 60000), characters: clean.length } } } });
-          continue;
-        }
-
-        if (proc === "research.get") {
-          const payload = researchCache.get(parsed.id as number);
-          if (!payload) {
-            results.push({ error: { message: "Research session not found." } });
-          } else {
-            results.push({ result: { data: { json: payload } } });
-          }
-          continue;
-        }
-
-        if (proc === "research.providers") {
-          results.push({ result: { data: { json: PROVIDERS_PAYLOAD } } });
-          continue;
-        }
-
-        if (proc === "research.plan") {
-          const q = String(parsed.question || "").replace(/\?+$/, "").trim();
-          results.push({
-            result: {
-              data: {
-                json: {
-                  queries: [q, `${q} latest evidence`, `${q} limitations and disagreement`].filter(Boolean),
-                  intent: "general",
-                  providers: ["wikipedia", "arxiv", "europepmc"],
-                  bounded: true,
-                  maxRounds: 3,
-                },
-              },
-            },
-          });
-          continue;
-        }
-
-        if (proc === "research.list") {
-          const items = Array.from(researchCache.entries())
-            .map(([id, payload]) => {
-              const session = (payload as { session?: { title?: string; status?: string; createdAt?: string } }).session;
-              return { id, title: session?.title || "Research", status: session?.status || "completed", createdAt: session?.createdAt };
-            })
-            .reverse();
-          results.push({ result: { data: { json: items } } });
-          continue;
-        }
-
-        if (proc === "auth.me" || proc === "auth.session") {
-          results.push({ result: { data: { json: null } } });
           continue;
         }
 
