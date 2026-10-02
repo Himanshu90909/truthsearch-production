@@ -5,6 +5,7 @@ import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/Home";
+import Visual from "./pages/Visual";
 
 function Router() {
   // make sure to consider if you need authentication for certain routes
@@ -13,6 +14,7 @@ function Router() {
       <Route path={"/"} component={Home} />
       <Route path={"/truthsearch-production/"} component={Home} />
       <Route path={"/truthsearch-production"} component={Home} />
+      <Route path={"/visual"} component={Visual} />
       <Route path={"/404"} component={NotFound} />
       {/* Final fallback route */}
       <Route component={NotFound} />

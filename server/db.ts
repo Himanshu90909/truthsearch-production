@@ -20,6 +20,7 @@ const TYPE_STMTS = [
   `DO $$ BEGIN CREATE TYPE "message_role" AS ENUM ('user', 'assistant', 'system'); EXCEPTION WHEN duplicate_object THEN null; END $$;`,
   `DO $$ BEGIN CREATE TYPE "query_status" AS ENUM ('planned', 'searched', 'failed'); EXCEPTION WHEN duplicate_object THEN null; END $$;`,
   `DO $$ BEGIN CREATE TYPE "verification_status" AS ENUM ('verified', 'mixed', 'unsupported'); EXCEPTION WHEN duplicate_object THEN null; END $$;`,
+  `DO $$ BEGIN CREATE TYPE "visual_status" AS ENUM ('queued', 'analyzing', 'completed', 'failed', 'cancelled'); EXCEPTION WHEN duplicate_object THEN null; END $$;`,
 ];
 
 const TABLE_COLUMNS: Record<string, string[]> = {
@@ -36,6 +37,14 @@ const TABLE_COLUMNS: Record<string, string[]> = {
   local_sessions: ["id", "token", "userId", "createdAt", "expiresAt"],
   collections: ["id", "userId", "name", "createdAt"],
   analytics_events: ["id", "userId", "type", "meta", "createdAt"],
+  visual_uploads: ["id", "token", "userId", "mime", "byteSize", "width", "height", "data", "createdAt", "expiresAt"],
+  visual_sessions: ["id", "userId", "uploadId", "question", "mode", "depth", "language", "status", "error", "researchSessionId", "createdAt", "updatedAt"],
+  visual_analyses: ["id", "sessionId", "provider", "model", "imageWidth", "imageHeight", "parsed", "overlaySvg", "diagramSvg", "droppedRegions", "latencyMs", "promptTokens", "completionTokens", "createdAt"],
+  visual_annotations: ["id", "analysisId", "regionIndex", "label", "kind", "bbox", "note", "confidence", "createdAt"],
+  visual_explanations: ["id", "analysisId", "text", "version", "createdAt"],
+  visual_followups: ["id", "sessionId", "question", "answer", "uncertainties", "provider", "model", "createdAt"],
+  visual_feedback: ["id", "analysisId", "userId", "rating", "comment", "createdAt"],
+  visual_usage: ["id", "userId", "sessionId", "kind", "provider", "model", "promptTokens", "completionTokens", "latencyMs", "createdAt"],
 };
 
 const CREATE_STMTS: Record<string, string> = {
@@ -52,6 +61,14 @@ const CREATE_STMTS: Record<string, string> = {
   local_sessions: `CREATE TABLE IF NOT EXISTS "local_sessions" ("id" serial PRIMARY KEY NOT NULL, "token" varchar(128) NOT NULL UNIQUE, "userId" integer NOT NULL, "createdAt" timestamp DEFAULT now() NOT NULL, "expiresAt" timestamp NOT NULL);`,
   collections: `CREATE TABLE IF NOT EXISTS "collections" ("id" serial PRIMARY KEY NOT NULL, "userId" integer NOT NULL, "name" varchar(120) NOT NULL, "createdAt" timestamp DEFAULT now() NOT NULL);`,
   analytics_events: `CREATE TABLE IF NOT EXISTS "analytics_events" ("id" serial PRIMARY KEY NOT NULL, "userId" integer, "type" varchar(64) NOT NULL, "meta" json, "createdAt" timestamp DEFAULT now() NOT NULL);`,
+  visual_uploads: `CREATE TABLE IF NOT EXISTS "visual_uploads" ("id" serial PRIMARY KEY NOT NULL, "token" varchar(64) NOT NULL UNIQUE, "userId" integer, "mime" varchar(64) NOT NULL, "byteSize" integer NOT NULL, "width" integer NOT NULL, "height" integer NOT NULL, "data" text NOT NULL, "createdAt" timestamp DEFAULT now() NOT NULL, "expiresAt" timestamp);`,
+  visual_sessions: `CREATE TABLE IF NOT EXISTS "visual_sessions" ("id" serial PRIMARY KEY NOT NULL, "userId" integer, "uploadId" integer NOT NULL, "question" text, "mode" varchar(24) NOT NULL, "depth" varchar(24) NOT NULL, "language" varchar(8) NOT NULL, "status" "visual_status" DEFAULT 'queued' NOT NULL, "error" text, "researchSessionId" integer, "createdAt" timestamp DEFAULT now() NOT NULL, "updatedAt" timestamp DEFAULT now() NOT NULL);`,
+  visual_analyses: `CREATE TABLE IF NOT EXISTS "visual_analyses" ("id" serial PRIMARY KEY NOT NULL, "sessionId" integer NOT NULL, "provider" varchar(64) NOT NULL, "model" varchar(160) NOT NULL, "imageWidth" integer NOT NULL, "imageHeight" integer NOT NULL, "parsed" json NOT NULL, "overlaySvg" text, "diagramSvg" text, "droppedRegions" integer DEFAULT 0 NOT NULL, "latencyMs" integer, "promptTokens" integer, "completionTokens" integer, "createdAt" timestamp DEFAULT now() NOT NULL);`,
+  visual_annotations: `CREATE TABLE IF NOT EXISTS "visual_annotations" ("id" serial PRIMARY KEY NOT NULL, "analysisId" integer NOT NULL, "regionIndex" integer NOT NULL, "label" varchar(160) NOT NULL, "kind" varchar(24) NOT NULL, "bbox" json NOT NULL, "note" text, "confidence" integer, "createdAt" timestamp DEFAULT now() NOT NULL);`,
+  visual_explanations: `CREATE TABLE IF NOT EXISTS "visual_explanations" ("id" serial PRIMARY KEY NOT NULL, "analysisId" integer NOT NULL, "text" text NOT NULL, "version" integer DEFAULT 1 NOT NULL, "createdAt" timestamp DEFAULT now() NOT NULL);`,
+  visual_followups: `CREATE TABLE IF NOT EXISTS "visual_followups" ("id" serial PRIMARY KEY NOT NULL, "sessionId" integer NOT NULL, "question" text NOT NULL, "answer" text NOT NULL, "uncertainties" json, "provider" varchar(64), "model" varchar(160), "createdAt" timestamp DEFAULT now() NOT NULL);`,
+  visual_feedback: `CREATE TABLE IF NOT EXISTS "visual_feedback" ("id" serial PRIMARY KEY NOT NULL, "analysisId" integer NOT NULL, "userId" integer, "rating" integer NOT NULL, "comment" text, "createdAt" timestamp DEFAULT now() NOT NULL);`,
+  visual_usage: `CREATE TABLE IF NOT EXISTS "visual_usage" ("id" serial PRIMARY KEY NOT NULL, "userId" integer, "sessionId" integer, "kind" varchar(32) NOT NULL, "provider" varchar(64), "model" varchar(160), "promptTokens" integer, "completionTokens" integer, "latencyMs" integer, "createdAt" timestamp DEFAULT now() NOT NULL);`,
 };
 
 async function ensureSchema(db: NonNullable<ReturnType<typeof drizzle>>): Promise<void> {

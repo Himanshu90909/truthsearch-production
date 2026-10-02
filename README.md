@@ -8,6 +8,17 @@
 
 TruthSearch now has a fully on-device path for **Snapdragon-powered HP PCs** (Omnibook Ultra / Omnibook 3, Snapdragon X Elite / X2 Elite). The AI stack — semantic evidence reranking (all-MiniLM-L6-v2, w8a16) and cited synthesis (Llama-v3.2-3B-Instruct, w4a16), both from [Qualcomm AI Hub](https://aihub.qualcomm.com) — runs on the Hexagon NPU via the QNN execution provider. Same research boundary, same citation audit, zero cloud AI calls: questions and evidence never leave the device, and the demo runs fully offline. See [`snapdragon/README.md`](snapdragon/README.md) and the challenge submission in [`PROPOSAL.md`](PROPOSAL.md).
 
+## Visual Intelligence (Oct 2026)
+
+**AI image understanding & explanation engine** — upload diagrams, charts, screenshots,
+code or handwritten notes and get evidence-grounded explanations: interactive region
+annotations, numbered steps, OCR, simplified SVG diagrams, visible-vs-inferred
+evidence blocks, follow-ups and TruthSearch citation verification. Provider-swappable
+vision chain (Gemini / HF / Groq / any OpenAI-compatible endpoint), structured JSON
+validated against schemas, untrusted coordinates sanitised, prompt-injection
+defended, private token-gated image storage with retention + full delete. See
+[VISUAL.md](VISUAL.md).
+
 ## Startup infrastructure — accounts, collections, analytics (Oct 2026)
 
 TruthSearch now runs as a real product, not just a demo:
