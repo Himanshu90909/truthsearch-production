@@ -17,7 +17,7 @@
     },
     {
       "source": "/visual",
-      "destination": "/index.html"
+      "destination": "/"
     }
   ],
   "headers": [
