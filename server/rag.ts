@@ -125,10 +125,28 @@ export async function retrieveChunks(question: string, chunks: Chunk[], topK = 6
     // dense embeddings are an accelerator, not a dependency
   }
   const fused = rrf([lexical, dense]);
-  return chunks
+  const ranked = chunks
     .map((c, i) => ({ ...c, score: fused[i], lexical: lexical[i], dense: dense[i] }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, Math.max(1, topK));
+    .sort((a, b) => b.score - a.score);
+  // Sliding-window chunks of the same long section can overlap heavily; keep
+  // the best-scoring window and drop near-duplicates so the answer is not
+  // padded with the same lines twice.
+  const kept: RetrievedChunk[] = [];
+  for (const chunk of ranked) {
+    if (kept.length >= Math.max(1, topK)) break;
+    if (kept.some((k) => isNearDuplicate(k.text, chunk.text))) continue;
+    kept.push(chunk);
+  }
+  return kept;
+}
+
+function isNearDuplicate(a: string, b: string): boolean {
+  const ta = new Set(tokenize(a));
+  const tb = new Set(tokenize(b));
+  if (!ta.size || !tb.size) return false;
+  let shared = 0;
+  for (const t of ta) if (tb.has(t)) shared++;
+  return shared / Math.min(ta.size, tb.size) > 0.6;
 }
 
 // Analysis-style questions ("analyse my resume") benefit from broader context

@@ -94,6 +94,22 @@ describe("hybrid retrieval", () => {
     expect(fused[0]).toBeGreaterThan(fused[1]);
   });
 
+  it("drops near-duplicate overlapping windows of the same section", async () => {
+    const long = "Skills\n" + Array.from({ length: 30 }, (_, i) => `python data pipelines aws docker kubernetes tooling entry ${i}`).join("\n");
+    const chunks = chunkDocument(long, 300);
+    expect(chunks.length).toBeGreaterThan(1);
+    const retrieved = await retrieveChunks("python data pipelines", chunks, 4);
+    const texts = retrieved.map((c) => c.text);
+    for (let i = 0; i < texts.length; i++) {
+      for (let j = i + 1; j < texts.length; j++) {
+        const a = new Set(texts[i].toLowerCase().split(/\W+/));
+        const b = texts[j].toLowerCase().split(/\W+/);
+        const shared = b.filter((t) => a.has(t)).length;
+        expect(shared / Math.min(a.size, b.length)).toBeLessThanOrEqual(0.6);
+      }
+    }
+  });
+
   it("degrades to BM25-only when dense embeddings fail", async () => {
     const chunks = chunkDocument(RESUME);
     const originalFetch = globalThis.fetch;
