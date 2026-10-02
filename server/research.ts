@@ -258,6 +258,8 @@ function looksLikeProse(quote: string): boolean {
   if (trimmed.length < 40) return false;
   // Wikipedia reference lists / nav boxes / citation dumps — never prose.
   if (/\u2191|Retrieved \d|Archived from|ISBN \d|Toggle the table of contents|Add links|Edit View history|Cite this page/.test(trimmed)) return false;
+  // Academic-landing-page UI chrome (Semantic Scholar / arXiv sidebars).
+  if (/Data provided by:|Connected Papers|Litmaps|scite\.ai|Bibliographic Tools/.test(trimmed)) return false;
   const asciiLetters = (trimmed.match(/[a-zA-Z]/g) || []).length;
   const spaces = (trimmed.match(/\s/g) || []).length;
   const digits = (trimmed.match(/\d/g) || []).length;
