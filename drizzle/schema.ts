@@ -1,54 +1,60 @@
-import { int, json, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
+import { integer, json, pgEnum, pgTable, serial, text, timestamp, varchar } from "drizzle-orm/pg-core";
 
-export const users = mysqlTable("users", {
-  id: int("id").autoincrement().primaryKey(),
+const roleEnum = pgEnum("role", ["user", "admin"]);
+const sessionStatusEnum = pgEnum("session_status", ["queued", "researching", "completed", "failed"]);
+const messageRoleEnum = pgEnum("message_role", ["user", "assistant", "system"]);
+const queryStatusEnum = pgEnum("query_status", ["planned", "searched", "failed"]);
+const verificationStatusEnum = pgEnum("verification_status", ["verified", "mixed", "unsupported"]);
+
+export const users = pgTable("users", {
+  id: serial("id").primaryKey(),
   openId: varchar("openId", { length: 64 }).notNull().unique(),
   name: text("name"),
   email: varchar("email", { length: 320 }),
   loginMethod: varchar("loginMethod", { length: 64 }),
-  role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
+  role: roleEnum("role").default("user").notNull(),
   passwordHash: text("passwordHash"),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-  lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
+  createdAt: timestamp("createdAt", { mode: "date" }).defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt", { mode: "date" }).defaultNow().$onUpdate(() => new Date()).notNull(),
+  lastSignedIn: timestamp("lastSignedIn", { mode: "date" }).defaultNow().notNull(),
 });
 
-export const researchSessions = mysqlTable("research_sessions", {
-  id: int("id").autoincrement().primaryKey(),
-  userId: int("userId"),
+export const researchSessions = pgTable("research_sessions", {
+  id: serial("id").primaryKey(),
+  userId: integer("userId"),
   title: varchar("title", { length: 500 }).notNull(),
   question: text("question").notNull(),
-  status: mysqlEnum("status", ["queued", "researching", "completed", "failed"]).default("queued").notNull(),
+  status: sessionStatusEnum("status").default("queued").notNull(),
   answer: text("answer"),
   plan: json("plan"),
   error: text("error"),
-  collectionId: int("collectionId"),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  collectionId: integer("collectionId"),
+  createdAt: timestamp("createdAt", { mode: "date" }).defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt", { mode: "date" }).defaultNow().$onUpdate(() => new Date()).notNull(),
 });
 
-export const researchMessages = mysqlTable("research_messages", {
-  id: int("id").autoincrement().primaryKey(),
-  sessionId: int("sessionId").notNull(),
-  role: mysqlEnum("role", ["user", "assistant", "system"]).notNull(),
+export const researchMessages = pgTable("research_messages", {
+  id: serial("id").primaryKey(),
+  sessionId: integer("sessionId").notNull(),
+  role: messageRoleEnum("role").notNull(),
   content: text("content").notNull(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  createdAt: timestamp("createdAt", { mode: "date" }).defaultNow().notNull(),
 });
 
-export const researchQueries = mysqlTable("research_queries", {
-  id: int("id").autoincrement().primaryKey(),
-  sessionId: int("sessionId").notNull(),
+export const researchQueries = pgTable("research_queries", {
+  id: serial("id").primaryKey(),
+  sessionId: integer("sessionId").notNull(),
   query: varchar("query", { length: 1000 }).notNull(),
   provider: varchar("provider", { length: 64 }).notNull(),
-  status: mysqlEnum("status", ["planned", "searched", "failed"]).default("planned").notNull(),
-  resultCount: int("resultCount").default(0).notNull(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  status: queryStatusEnum("status").default("planned").notNull(),
+  resultCount: integer("resultCount").default(0).notNull(),
+  createdAt: timestamp("createdAt", { mode: "date" }).defaultNow().notNull(),
 });
 
-export const researchSources = mysqlTable("research_sources", {
-  id: int("id").autoincrement().primaryKey(),
-  sessionId: int("sessionId").notNull(),
-  queryId: int("queryId"),
+export const researchSources = pgTable("research_sources", {
+  id: serial("id").primaryKey(),
+  sessionId: integer("sessionId").notNull(),
+  queryId: integer("queryId"),
   url: varchar("url", { length: 2048 }).notNull(),
   canonicalUrl: varchar("canonicalUrl", { length: 2048 }).notNull(),
   title: text("title").notNull(),
@@ -56,77 +62,77 @@ export const researchSources = mysqlTable("research_sources", {
   author: text("author"),
   publicationDate: varchar("publicationDate", { length: 128 }),
   sourceType: varchar("sourceType", { length: 64 }).notNull(),
-  qualityScore: int("qualityScore").notNull(),
+  qualityScore: integer("qualityScore").notNull(),
   content: text("content"),
-  retrievedAt: timestamp("retrievedAt").defaultNow().notNull(),
+  retrievedAt: timestamp("retrievedAt", { mode: "date" }).defaultNow().notNull(),
 });
 
-export const researchPassages = mysqlTable("research_passages", {
-  id: int("id").autoincrement().primaryKey(),
-  sourceId: int("sourceId").notNull(),
-  passageIndex: int("passageIndex").notNull(),
+export const researchPassages = pgTable("research_passages", {
+  id: serial("id").primaryKey(),
+  sourceId: integer("sourceId").notNull(),
+  passageIndex: integer("passageIndex").notNull(),
   text: text("text").notNull(),
-  tokenCount: int("tokenCount").notNull(),
-  bm25Score: int("bm25Score"),
-  denseScore: int("denseScore"),
-  fusedScore: int("fusedScore"),
-  rerankScore: int("rerankScore"),
+  tokenCount: integer("tokenCount").notNull(),
+  bm25Score: integer("bm25Score"),
+  denseScore: integer("denseScore"),
+  fusedScore: integer("fusedScore"),
+  rerankScore: integer("rerankScore"),
 });
 
-export const researchClaims = mysqlTable("research_claims", {
-  id: int("id").autoincrement().primaryKey(),
-  sessionId: int("sessionId").notNull(),
+export const researchClaims = pgTable("research_claims", {
+  id: serial("id").primaryKey(),
+  sessionId: integer("sessionId").notNull(),
   claim: text("claim").notNull(),
-  confidence: int("confidence").notNull(),
-  verificationStatus: mysqlEnum("verificationStatus", ["verified", "mixed", "unsupported"]).notNull(),
+  confidence: integer("confidence").notNull(),
+  verificationStatus: verificationStatusEnum("verificationStatus").notNull(),
 });
 
-export const researchEvidence = mysqlTable("research_evidence", {
-  id: int("id").autoincrement().primaryKey(),
-  claimId: int("claimId").notNull(),
-  passageId: int("passageId").notNull(),
-  supportScore: int("supportScore").notNull(),
+export const researchEvidence = pgTable("research_evidence", {
+  id: serial("id").primaryKey(),
+  claimId: integer("claimId").notNull(),
+  passageId: integer("passageId").notNull(),
+  supportScore: integer("supportScore").notNull(),
   exactQuote: text("exactQuote").notNull(),
 });
 
-export const researchContradictions = mysqlTable("research_contradictions", {
-  id: int("id").autoincrement().primaryKey(),
-  sessionId: int("sessionId").notNull(),
-  claimId: int("claimId").notNull(),
+export const researchContradictions = pgTable("research_contradictions", {
+  id: serial("id").primaryKey(),
+  sessionId: integer("sessionId").notNull(),
+  claimId: integer("claimId").notNull(),
   description: text("description").notNull(),
   sourceIds: json("sourceIds").notNull(),
 });
 
-export const researchCitations = mysqlTable("research_citations", {
-  id: int("id").autoincrement().primaryKey(),
-  claimId: int("claimId").notNull(),
-  sourceId: int("sourceId").notNull(),
-  verified: int("verified").notNull().default(0),
+export const researchCitations = pgTable("research_citations", {
+  id: serial("id").primaryKey(),
+  claimId: integer("claimId").notNull(),
+  sourceId: integer("sourceId").notNull(),
+  verified: integer("verified").notNull().default(0),
 });
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 export type ResearchSession = typeof researchSessions.$inferSelect;
 
-export const localSessions = mysqlTable("local_sessions", {
-  id: int("id").autoincrement().primaryKey(),
+export const localSessions = pgTable("local_sessions", {
+  id: serial("id").primaryKey(),
   token: varchar("token", { length: 128 }).notNull().unique(),
-  userId: int("userId").notNull(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-  expiresAt: timestamp("expiresAt").notNull(),
+  userId: integer("userId").notNull(),
+  createdAt: timestamp("createdAt", { mode: "date" }).defaultNow().notNull(),
+  expiresAt: timestamp("expiresAt", { mode: "date" }).notNull(),
 });
 
-export const collections = mysqlTable("collections", {
-  id: int("id").autoincrement().primaryKey(),
-  userId: int("userId").notNull(),
+export const collections = pgTable("collections", {
+  id: serial("id").primaryKey(),
+  userId: integer("userId").notNull(),
   name: varchar("name", { length: 120 }).notNull(),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  createdAt: timestamp("createdAt", { mode: "date" }).defaultNow().notNull(),
 });
 
-export const analyticsEvents = mysqlTable("analytics_events", {
-  id: int("id").autoincrement().primaryKey(),
-  userId: int("userId"),
+export const analyticsEvents = pgTable("analytics_events", {
+  id: serial("id").primaryKey(),
+  userId: integer("userId"),
   type: varchar("type", { length: 64 }).notNull(),
   meta: json("meta"),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  createdAt: timestamp("createdAt", { mode: "date" }).defaultNow().notNull(),
 });

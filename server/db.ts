@@ -1,15 +1,79 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/mysql2";
+import { drizzle } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
 import { InsertUser, users, researchSessions, researchMessages, researchQueries, researchSources, researchPassages, researchClaims, researchEvidence, researchCitations, localSessions, collections, analyticsEvents } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 import { SESSION_TTL_MS, newSessionToken } from "./auth-local";
 
 let _db: ReturnType<typeof drizzle> | null = null;
-export async function getDb() { if (!_db && process.env.DATABASE_URL) { try { _db = drizzle(process.env.DATABASE_URL); } catch (error) { console.warn("[Database] Failed to connect:", error); } } return _db; }
+let _schemaReady: Promise<void> | null = null;
+
+// Idempotent schema bootstrap: the serverless deployment creates its tables on
+// first request after a cold start, so no manual migration step is required.
+const SCHEMA_DDL = `
+DO $$ BEGIN
+  CREATE TYPE "role" AS ENUM ('user', 'admin');
+EXCEPTION WHEN duplicate_object THEN null; END $$;
+-- @next
+DO $$ BEGIN
+  CREATE TYPE "session_status" AS ENUM ('queued', 'researching', 'completed', 'failed');
+EXCEPTION WHEN duplicate_object THEN null; END $$;
+-- @next
+DO $$ BEGIN
+  CREATE TYPE "message_role" AS ENUM ('user', 'assistant', 'system');
+EXCEPTION WHEN duplicate_object THEN null; END $$;
+-- @next
+DO $$ BEGIN
+  CREATE TYPE "query_status" AS ENUM ('planned', 'searched', 'failed');
+EXCEPTION WHEN duplicate_object THEN null; END $$;
+-- @next
+DO $$ BEGIN
+  CREATE TYPE "verification_status" AS ENUM ('verified', 'mixed', 'unsupported');
+EXCEPTION WHEN duplicate_object THEN null; END $$;
+-- @next
+-- @next
+CREATE TABLE IF NOT EXISTS "users" ("id" serial PRIMARY KEY NOT NULL, "openId" varchar(64) NOT NULL UNIQUE, "name" text, "email" varchar(320), "loginMethod" varchar(64), "role" "role" DEFAULT 'user' NOT NULL, "passwordHash" text, "createdAt" timestamp DEFAULT now() NOT NULL, "updatedAt" timestamp DEFAULT now() NOT NULL, "lastSignedIn" timestamp DEFAULT now() NOT NULL);
+-- @next
+CREATE TABLE IF NOT EXISTS "research_sessions" ("id" serial PRIMARY KEY NOT NULL, "userId" integer, "title" varchar(500) NOT NULL, "question" text NOT NULL, "status" "session_status" DEFAULT 'queued' NOT NULL, "answer" text, "plan" json, "error" text, "collectionId" integer, "createdAt" timestamp DEFAULT now() NOT NULL, "updatedAt" timestamp DEFAULT now() NOT NULL);
+-- @next
+CREATE TABLE IF NOT EXISTS "research_messages" ("id" serial PRIMARY KEY NOT NULL, "sessionId" integer NOT NULL, "role" "message_role" NOT NULL, "content" text NOT NULL, "createdAt" timestamp DEFAULT now() NOT NULL);
+-- @next
+CREATE TABLE IF NOT EXISTS "research_queries" ("id" serial PRIMARY KEY NOT NULL, "sessionId" integer NOT NULL, "query" varchar(1000) NOT NULL, "provider" varchar(64) NOT NULL, "status" "query_status" DEFAULT 'planned' NOT NULL, "resultCount" integer DEFAULT 0 NOT NULL, "createdAt" timestamp DEFAULT now() NOT NULL);
+-- @next
+CREATE TABLE IF NOT EXISTS "research_sources" ("id" serial PRIMARY KEY NOT NULL, "sessionId" integer NOT NULL, "queryId" integer, "url" varchar(2048) NOT NULL, "canonicalUrl" varchar(2048) NOT NULL, "title" text NOT NULL, "domain" varchar(255) NOT NULL, "author" text, "publicationDate" varchar(128), "sourceType" varchar(64) NOT NULL, "qualityScore" integer NOT NULL, "content" text, "retrievedAt" timestamp DEFAULT now() NOT NULL);
+-- @next
+CREATE TABLE IF NOT EXISTS "research_passages" ("id" serial PRIMARY KEY NOT NULL, "sourceId" integer NOT NULL, "passageIndex" integer NOT NULL, "text" text NOT NULL, "tokenCount" integer NOT NULL, "bm25Score" integer, "denseScore" integer, "fusedScore" integer, "rerankScore" integer);
+-- @next
+CREATE TABLE IF NOT EXISTS "research_claims" ("id" serial PRIMARY KEY NOT NULL, "sessionId" integer NOT NULL, "claim" text NOT NULL, "confidence" integer NOT NULL, "verificationStatus" "verification_status" NOT NULL);
+-- @next
+CREATE TABLE IF NOT EXISTS "research_evidence" ("id" serial PRIMARY KEY NOT NULL, "claimId" integer NOT NULL, "passageId" integer NOT NULL, "supportScore" integer NOT NULL, "exactQuote" text NOT NULL);
+-- @next
+CREATE TABLE IF NOT EXISTS "research_contradictions" ("id" serial PRIMARY KEY NOT NULL, "sessionId" integer NOT NULL, "claimId" integer NOT NULL, "description" text NOT NULL, "sourceIds" json NOT NULL);
+-- @next
+CREATE TABLE IF NOT EXISTS "research_citations" ("id" serial PRIMARY KEY NOT NULL, "claimId" integer NOT NULL, "sourceId" integer NOT NULL, "verified" integer DEFAULT 0 NOT NULL);
+-- @next
+CREATE TABLE IF NOT EXISTS "local_sessions" ("id" serial PRIMARY KEY NOT NULL, "token" varchar(128) NOT NULL UNIQUE, "userId" integer NOT NULL, "createdAt" timestamp DEFAULT now() NOT NULL, "expiresAt" timestamp NOT NULL);
+-- @next
+CREATE TABLE IF NOT EXISTS "collections" ("id" serial PRIMARY KEY NOT NULL, "userId" integer NOT NULL, "name" varchar(120) NOT NULL, "createdAt" timestamp DEFAULT now() NOT NULL);
+-- @next
+CREATE TABLE IF NOT EXISTS "analytics_events" ("id" serial PRIMARY KEY NOT NULL, "userId" integer, "type" varchar(64) NOT NULL, "meta" json, "createdAt" timestamp DEFAULT now() NOT NULL);
+`;
+
+export async function getDb() {
+  if (!_db && process.env.DATABASE_URL) {
+    try {
+      _db = drizzle(postgres(process.env.DATABASE_URL, { max: 5, prepare: false }));
+      const statements = SCHEMA_DDL.split("-- @next").map((x) => x.trim()).filter(Boolean);
+      _schemaReady = (async () => { for (const stmt of statements) { try { await _db.execute(sql.raw(stmt)); } catch (error) { if (!/already exists/i.test(String(error))) console.warn("[Database] Bootstrap statement failed:", error); } } })();
+    } catch (error) { console.warn("[Database] Failed to connect:", error); }
+  }
+  if (_db && _schemaReady) await _schemaReady;
+  return _db;
+}
 
 // ---------------------------------------------------------------------------
 // In-memory fallback store: when DATABASE_URL is absent (e.g. a self-contained
-// deployment), research sessions are kept in process memory instead of MySQL.
+// deployment), research sessions are kept in process memory instead of Postgres.
 // Same shapes as the drizzle rows, so routers and the client need no changes.
 // ---------------------------------------------------------------------------
 type MemSession = { id: number; title: string; question: string; userId: number | null; status: "queued" | "researching" | "completed" | "failed"; answer: string | null; plan: unknown; error: string | null; collectionId: number | null; createdAt: Date; updatedAt: Date };
@@ -32,7 +96,7 @@ const mem = {
 function memId() { return mem.nextId++; }
 function touch(s: MemSession | undefined) { if (s) { s.updatedAt = new Date(); } }
 
-export async function upsertUser(user: InsertUser): Promise<void> { if (!user.openId) throw new Error("User openId is required for upsert"); const db = await getDb(); if (!db) return; const values: InsertUser = { openId: user.openId, name: user.name, email: user.email, loginMethod: user.loginMethod, lastSignedIn: user.lastSignedIn || new Date() }; const updateSet: Record<string, unknown> = { ...values }; if (user.role || user.openId === ENV.ownerOpenId) { values.role = user.role || "admin"; updateSet.role = values.role; } await db.insert(users).values(values).onDuplicateKeyUpdate({ set: updateSet }); }
+export async function upsertUser(user: InsertUser): Promise<void> { if (!user.openId) throw new Error("User openId is required for upsert"); const db = await getDb(); if (!db) return; const values: InsertUser = { openId: user.openId, name: user.name, email: user.email, loginMethod: user.loginMethod, lastSignedIn: user.lastSignedIn || new Date() }; const updateSet: Record<string, unknown> = { ...values }; if (user.role || user.openId === ENV.ownerOpenId) { values.role = user.role || "admin"; updateSet.role = values.role; } await db.insert(users).values(values).onConflictDoUpdate({ target: users.openId, set: updateSet }); }
 export async function getUserByOpenId(openId: string) { const db = await getDb(); if (!db) return undefined; const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1); return result[0]; }
 
 export async function createSession(question: string, userId?: number) {
@@ -43,7 +107,7 @@ export async function createSession(question: string, userId?: number) {
     mem.sessions.set(id, { id, title: question.slice(0, 120), question, userId: userId ?? null, status: "queued", answer: null, plan: null, error: null, collectionId: null, createdAt: now, updatedAt: now });
     return id;
   }
-  const result = await db.insert(researchSessions).values({ title: question.slice(0, 120), question, userId, status: "queued" }); return Number(result[0].insertId);
+  const result = await db.insert(researchSessions).values({ title: question.slice(0, 120), question, userId, status: "queued" }).returning({ id: researchSessions.id }); return Number(result[0].id);
 }
 export async function updateSession(id: number, patch: Partial<typeof researchSessions.$inferInsert>) {
   const db = await getDb();
@@ -59,12 +123,12 @@ export async function addSource(sessionId: number, source: any) {
     mem.sources.push({ id, sessionId, url: source.url, canonicalUrl: source.canonicalUrl, title: source.title, domain: source.domain, author: source.author, publicationDate: source.published, sourceType: source.sourceType, qualityScore: source.qualityScore, content: source.content });
     return id;
   }
-  const result = await db.insert(researchSources).values({ sessionId, url: source.url, canonicalUrl: source.canonicalUrl, title: source.title, domain: source.domain, author: source.author, publicationDate: source.published, sourceType: source.sourceType, qualityScore: source.qualityScore, content: source.content }); return Number(result[0].insertId);
+  const result = await db.insert(researchSources).values({ sessionId, url: source.url, canonicalUrl: source.canonicalUrl, title: source.title, domain: source.domain, author: source.author, publicationDate: source.published, sourceType: source.sourceType, qualityScore: source.qualityScore, content: source.content }).returning({ id: researchSources.id }); return Number(result[0].id);
 }
 export function matchPassageId(passages: string[], quote: string, ids: number[]) { const index = passages.findIndex((passage) => passage === quote); return index >= 0 ? ids[index] || 0 : 0; }
 export function buildVerifiedLink(passages: string[], quote: string, passageRowIds: number[], sourceRowId: number, claimRowId: number) { const passageId = matchPassageId(passages, quote, passageRowIds); return passageId && sourceRowId && claimRowId ? { evidence: { claimId: claimRowId, passageId, exactQuote: quote }, citation: { claimId: claimRowId, sourceId: sourceRowId, verified: 1 } } : null; }
-export async function addPassage(sourceId: number, passageIndex: number, text: string) { const db = await getDb(); if (!db) { const id = memId(); mem.passages.push({ id, sourceId, passageIndex, text, tokenCount: text.split(/\s+/).length }); return id; } const result = await db.insert(researchPassages).values({ sourceId, passageIndex, text, tokenCount: text.split(/\s+/).length }); return Number(result[0].insertId); }
-export async function addClaim(sessionId: number, claim: string, confidence: number, status: "verified" | "mixed" | "unsupported") { const db = await getDb(); if (!db) { const id = memId(); mem.claims.push({ id, sessionId, claim, confidence, verificationStatus: status }); return id; } const result = await db.insert(researchClaims).values({ sessionId, claim, confidence, verificationStatus: status }); return Number(result[0].insertId); }
+export async function addPassage(sourceId: number, passageIndex: number, text: string) { const db = await getDb(); if (!db) { const id = memId(); mem.passages.push({ id, sourceId, passageIndex, text, tokenCount: text.split(/\s+/).length }); return id; } const result = await db.insert(researchPassages).values({ sourceId, passageIndex, text, tokenCount: text.split(/\s+/).length }).returning({ id: researchPassages.id }); return Number(result[0].id); }
+export async function addClaim(sessionId: number, claim: string, confidence: number, status: "verified" | "mixed" | "unsupported") { const db = await getDb(); if (!db) { const id = memId(); mem.claims.push({ id, sessionId, claim, confidence, verificationStatus: status }); return id; } const result = await db.insert(researchClaims).values({ sessionId, claim, confidence, verificationStatus: status }).returning({ id: researchClaims.id }); return Number(result[0].id); }
 export async function addEvidence(claimId: number, passageId: number, quote: string, supportScore: number) { const db = await getDb(); if (!db) { mem.evidence.push({ id: memId(), claimId, passageId, exactQuote: quote, supportScore }); return; } await db.insert(researchEvidence).values({ claimId, passageId, exactQuote: quote, supportScore }); }
 export async function addCitation(claimId: number, sourceId: number, verified: boolean) { const db = await getDb(); if (!db) return; await db.insert(researchCitations).values({ claimId, sourceId, verified: verified ? 1 : 0 }); }
 export async function listSessions(userId?: number, limit = 30) {
@@ -109,7 +173,7 @@ export async function getSession(id: number, userId?: number) {
 
 // ---------------------------------------------------------------------------
 // Startup infrastructure: local accounts, collections, analytics events.
-// Same dual-mode contract as above — MySQL via drizzle when DATABASE_URL is
+// Same dual-mode contract as above — Postgres (Neon) via drizzle when DATABASE_URL is
 // present, in-process fallback otherwise.
 // ---------------------------------------------------------------------------
 type MemUser = { id: number; openId: string; name: string | null; email: string | null; passwordHash: string | null; role: "user" | "admin"; createdAt: Date; updatedAt: Date; lastSignedIn: Date };
@@ -189,8 +253,8 @@ export async function createCollection(userId: number, name: string) {
     startupMem.collections.push({ id, userId, name, createdAt: new Date() });
     return id;
   }
-  const result = await db.insert(collections).values({ userId, name });
-  return Number(result[0].insertId);
+  const result = await db.insert(collections).values({ userId, name }).returning({ id: collections.id });
+  return Number(result[0].id);
 }
 
 export async function listCollections(userId: number): Promise<CollectionRow[]> {
