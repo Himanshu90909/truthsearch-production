@@ -256,10 +256,13 @@ export function synthesisModelConfigured(): boolean {
 function looksLikeProse(quote: string): boolean {
   const trimmed = quote.trim();
   if (trimmed.length < 40) return false;
+  // Wikipedia reference lists / nav boxes / citation dumps — never prose.
+  if (/\u2191|Retrieved \d|Archived from|ISBN \d|Toggle the table of contents|Add links|Edit View history|Cite this page/.test(trimmed)) return false;
   const asciiLetters = (trimmed.match(/[a-zA-Z]/g) || []).length;
   const spaces = (trimmed.match(/\s/g) || []).length;
+  const digits = (trimmed.match(/\d/g) || []).length;
   const words = trimmed.split(/\s+/).length;
-  return asciiLetters / trimmed.length >= 0.45 && spaces / trimmed.length >= 0.1 && words >= 12;
+  return asciiLetters / trimmed.length >= 0.5 && spaces / trimmed.length >= 0.12 && digits / trimmed.length <= 0.08 && words >= 12;
 }
 
 export function extractiveFallbackAnswer(question: string, evidence: EvidenceRecord[], conflicts: ReturnType<typeof detectContradictions>, mode: ResearchMode): string {
