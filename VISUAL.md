@@ -55,3 +55,13 @@ bbox sanitisation, schema rejection, JSON extraction, SVG escaping, provider
 chain, URL-based in-chat analysis (valid attachment, non-image rejection,
 header dimension parsing), extractive document sections and honest
 no-vision-model notes.
+
+## RAG layer for documents (`server/rag.ts`)
+
+Section-aware chunking (resume headers keep their content together, long
+sections get paragraph-aligned overlapping windows) → hybrid retrieval:
+BM25 lexical scores fused with local dense-embedding scores via Reciprocal
+Rank Fusion → only question-relevant chunks are injected into the answer
+context, each labeled with its section. Point questions retrieve narrowly
+(top-6); analysis questions (`analyse my resume`) widen to top-14. Dense
+embeddings degrade gracefully to BM25-only if unavailable.
