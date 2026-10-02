@@ -196,8 +196,13 @@ export async function getUserByEmail(email: string) {
     for (const user of Array.from(startupMem.users.values())) if (user.email === email) return user;
     return undefined;
   }
-  const result = await db.select().from(users).where(eq(users.email, email)).limit(1);
-  return result[0];
+  try {
+    const result = await db.select().from(users).where(eq(users.email, email)).limit(1);
+    return result[0];
+  } catch (error) {
+    console.error("[DB] getUserByEmail failed:", JSON.stringify({ message: error instanceof Error ? error.message : String(error), cause: error instanceof Error && "cause" in error ? String((error as { cause?: unknown }).cause) : undefined }));
+    throw error;
+  }
 }
 
 export async function createLocalUser(input: { email: string; name: string | null; passwordHash: string }) {
