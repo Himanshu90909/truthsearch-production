@@ -126,6 +126,26 @@ export function extractRelevantLinks(html: string, baseUrl: string, question: st
   return found.sort((a, b) => b.score - a.score).slice(0, limit);
 }
 
+// The keyless web engine (DuckDuckGo HTML) rate-limits concurrent bursts with
+// HTTP 403/202 challenges, so web-primary research runs its queries one at a
+// time with a small gap, and each failed web query falls back to the Wikipedia
+// API per-query instead of dropping the whole plan.
+async function runSerializedWebQueries(planned: Array<{ q: string; provider: ProviderName }>): Promise<PromiseSettledResult<SearchHit[]>[]> {
+  const out: PromiseSettledResult<SearchHit[]>[] = [];
+  for (let i = 0; i < planned.length; i++) {
+    const { q, provider } = planned[i];
+    if (i > 0) await new Promise((r) => setTimeout(r, 700));
+    try {
+      let hits = await searchProvider(provider, q);
+      if (!hits.length && provider === "duckDuckGo") hits = await searchProvider("wikipedia", q);
+      out.push({ status: "fulfilled", value: hits });
+    } catch (error) {
+      try { out.push({ status: "fulfilled", value: await searchProvider("wikipedia", q) }); } catch { out.push({ status: "rejected", reason: error }); }
+    }
+  }
+  return out;
+}
+
 export async function searchProvider(provider: ProviderName, query: string): Promise<SearchHit[]> {
   const knowledgeProvider = providerRegistry.get(provider);
   if (knowledgeProvider) {
@@ -610,7 +630,9 @@ export async function conductResearch(question: string, onProgress: (p: Research
   // intents route every query to the general-web provider instead.
   const academicIntent = mode === "academic" || intent === "academic_research";
   const planned = queries.map((q, i) => ({ q, provider: academicIntent ? freeAcademic[i % freeAcademic.length] : i === 0 ? primary : i < 6 ? (primary === "duckDuckGo" ? primary : freeAcademic[(i - 1) % freeAcademic.length]) : extraProviders[(i - 6) % Math.max(extraProviders.length, 1)] || "wikidata" }));
-  const settled = await Promise.allSettled(planned.map(({ q, provider }) => searchProvider(provider, q)));
+  const settled = (!academicIntent && primary === "duckDuckGo")
+    ? await runSerializedWebQueries(planned)
+    : await Promise.allSettled(planned.map(({ q, provider }) => searchProvider(provider, q)));
   const failures = settled.filter((x): x is PromiseRejectedResult => x.status === "rejected").map((x) => x.reason instanceof Error ? x.reason.message : "Provider failed");
   if (failures.length) onProgress({ stage: "provider-warning", detail: `${failures.length} provider request(s) unavailable; continuing only with completed live results`, at: Date.now() });
   let hits = settled.filter((x): x is PromiseFulfilledResult<SearchHit[]> => x.status === "fulfilled").flatMap((x) => x.value);
