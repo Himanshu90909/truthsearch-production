@@ -130,6 +130,13 @@ export function extractRelevantLinks(html: string, baseUrl: string, question: st
 // HTTP 403/202 challenges, so web-primary research runs its queries one at a
 // time with a small gap, and each failed web query falls back to the Wikipedia
 // API per-query instead of dropping the whole plan.
+// MediaWiki full-text search chokes on long natural-language questions with
+// punctuation (totalhits: 0), so fallback queries are compacted to the first
+// few meaningful words before hitting the Wikipedia API.
+function compactFallbackQuery(q: string): string {
+  return q.replace(/[^\w\s]/g, " ").split(/\s+/).filter(Boolean).slice(0, 8).join(" ");
+}
+
 async function runSerializedWebQueries(planned: Array<{ q: string; provider: ProviderName }>): Promise<PromiseSettledResult<SearchHit[]>[]> {
   const out: PromiseSettledResult<SearchHit[]>[] = [];
   for (let i = 0; i < planned.length; i++) {
@@ -137,10 +144,10 @@ async function runSerializedWebQueries(planned: Array<{ q: string; provider: Pro
     if (i > 0) await new Promise((r) => setTimeout(r, 700));
     try {
       let hits = await searchProvider(provider, q);
-      if (!hits.length && provider === "duckDuckGo") hits = await searchProvider("wikipedia", q);
+      if (!hits.length && provider === "duckDuckGo") hits = await searchProvider("wikipedia", compactFallbackQuery(q));
       out.push({ status: "fulfilled", value: hits });
     } catch (error) {
-      try { out.push({ status: "fulfilled", value: await searchProvider("wikipedia", q) }); } catch { out.push({ status: "rejected", reason: error }); }
+      try { out.push({ status: "fulfilled", value: await searchProvider("wikipedia", compactFallbackQuery(q)) }); } catch { out.push({ status: "rejected", reason: error }); }
     }
   }
   return out;
@@ -640,7 +647,7 @@ export async function conductResearch(question: string, onProgress: (p: Research
     // Keyless web search came back empty — fall back to the Wikipedia API so
     // the research still has live sources.
     onProgress({ stage: "provider-warning", detail: "Keyless web search returned no results; falling back to Wikipedia search", at: Date.now() });
-    try { hits = await searchProvider("wikipedia", queries[0]); } catch { hits = []; }
+    try { hits = await searchProvider("wikipedia", compactFallbackQuery(queries[0])); } catch { hits = []; }
   }
   if (!hits.length) onProgress({ stage: "provider-warning", detail: `All live providers were unavailable (${failures.join("; ") || "no results"}). The model will answer from its own knowledge, clearly labeled.`, at: Date.now() });
   const unique = Array.from(new Map(hits.filter((x) => x.url).map((x) => { try { return [canonicalizeUrl(x.url), x] as const; } catch { return [x.url, x] as const; } })).values()).slice(0, Math.min(modeCfg.sourceCap, maxSources));
