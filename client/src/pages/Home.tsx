@@ -72,7 +72,9 @@ async function ocrImageText(dataUrl: string): Promise<string> {
       const mod: any = await import("tesseract.js");
       ocrWorker = await mod.createWorker("eng");
     }
-    const { data } = await ocrWorker.recognize(dataUrl);
+    const worker = ocrWorker;
+    if (!worker) return "";
+    const { data } = await worker.recognize(dataUrl);
     return (data?.text || "").trim();
   } catch {
     return "";
