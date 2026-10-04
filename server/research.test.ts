@@ -104,6 +104,29 @@ describe("single synthesis backend", () => {
     await expect(callSynthesisLLM({ messages: [{ role: "user", content: "hi" }] })).rejects.toThrow(/No answer was generated/);
     process.env = before;
   });
+  it("adds the keyless Pollinations provider on production builds (zero-card answers) and honors the opt-out", async () => {
+    const before = { ...process.env };
+    const savedNodeEnv = process.env.NODE_ENV;
+    const savedOptOut = process.env.POLLINATIONS_SYNTHESIS;
+    delete process.env.HF_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.XAI_API_KEY;
+    delete process.env.GROQ_API_KEY;
+    delete process.env.POLLINATIONS_SYNTHESIS;
+    process.env.NODE_ENV = "production";
+    const { synthesisModelConfigured, synthesisProviders } = await import("./research");
+    expect(synthesisModelConfigured()).toBe(true);
+    const keyless = synthesisProviders().find((p: { name: string }) => p.name === "pollinations");
+    expect(keyless).toBeTruthy();
+    expect(keyless.models.vision).toHaveLength(0); // anonymous tier rejects image inputs
+    expect(keyless.models.general).toContain("openai");
+    process.env.POLLINATIONS_SYNTHESIS = "false";
+    expect(synthesisModelConfigured()).toBe(false);
+    if (savedNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = savedNodeEnv;
+    if (savedOptOut === undefined) delete process.env.POLLINATIONS_SYNTHESIS; else process.env.POLLINATIONS_SYNTHESIS = savedOptOut;
+    process.env = before;
+    if (savedNodeEnv !== undefined) process.env.NODE_ENV = savedNodeEnv;
+  });
   it("cascades to the fallback model when Qwen3.8-27B fails, by question kind", async () => {
     const before = { ...process.env };
     process.env.HF_API_KEY = "hf_test_token";
