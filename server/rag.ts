@@ -145,7 +145,7 @@ function isNearDuplicate(a: string, b: string): boolean {
   const tb = new Set(tokenize(b));
   if (!ta.size || !tb.size) return false;
   let shared = 0;
-  for (const t of ta) if (tb.has(t)) shared++;
+  for (const t of Array.from(ta)) if (tb.has(t)) shared++;
   return shared / Math.min(ta.size, tb.size) > 0.6;
 }
 

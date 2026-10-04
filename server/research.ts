@@ -6,7 +6,7 @@ import { generateResearchImage } from "./visual/generate";
 import { chunkDocument, retrieveChunks, isResumeLike, wantsBroadContext, type RetrievedChunk } from "./rag";
 import { providerRegistry, providersForIntent } from "./providers/registry";
 
-export type ProviderName = "brave" | "tavily" | "semanticScholar" | "crossref" | "openalex" | "europePmc" | "wikipedia" | "arxiv" | "github" | "stackExchange" | "openLibrary" | "wikidata" | "worldBank" | "dataGov";
+export type ProviderName = "duckDuckGo" | "brave" | "tavily" | "semanticScholar" | "crossref" | "openalex" | "europePmc" | "wikipedia" | "arxiv" | "github" | "stackExchange" | "openLibrary" | "wikidata" | "worldBank" | "dataGov";
 export type ResearchProgress = { stage: string; detail: string; at: number };
 export type SearchHit = { title: string; url: string; snippet: string; published?: string; author?: string; provider: ProviderName };
 export type SourceRecord = SearchHit & { canonicalUrl: string; domain: string; sourceType: string; qualityScore: number; content: string; passages: string[]; relevance?: number };
@@ -78,11 +78,70 @@ async function requestJson(url: string, init?: RequestInit) {
   } finally { clearTimeout(timer); }
 }
 
+// Parse DuckDuckGo's HTML results page into clean SearchHits. Exported for tests.
+export function parseDuckDuckGoHtml(html: string): SearchHit[] {
+  const hits: SearchHit[] = [];
+  const linkRe = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
+  const snipRe = /<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
+  const snippets: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = snipRe.exec(html))) snippets.push(m[1].replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim());
+  while ((m = linkRe.exec(html)) && hits.length < 12) {
+    const href = m[1].replace(/&amp;/g, "&");
+    const uddg = /[?&]uddg=([^&]+)/.exec(href);
+    if (!uddg) continue;
+    let url: string;
+    try { url = decodeURIComponent(uddg[1]); } catch { continue; }
+    if (!/^https?:\/\//.test(url)) continue;
+    const title = m[2].replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
+    hits.push({ title, url, snippet: snippets[hits.length] || "", provider: "duckDuckGo" });
+  }
+  return hits;
+}
+
+// Second-hop browsing: pick follow-up links from a fetched page that are
+// actually about the question. Exported for tests.
+export function extractRelevantLinks(html: string, baseUrl: string, question: string, seen: Set<string>, limit = 6): Array<{ url: string; score: number }> {
+  const terms = new Set(question.toLowerCase().split(/\W+/).filter((t) => t.length > 3));
+  const found: Array<{ url: string; score: number }> = [];
+  const re = /<a[^>]*href="([^"#]+)"[^>]*>([\s\S]{0,200}?)<\/a>/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) && found.length < 40) {
+    let href = m[1].replace(/&amp;/g, "&");
+    if (href.startsWith("//")) href = "https:" + href;
+    let url: URL;
+    try { url = new URL(href, baseUrl); } catch { continue; }
+    if (!/^https?:$/.test(url.protocol)) continue;
+    if (/\.(pdf|zip|png|jpe?g|gif|svg|webp|mp4|mp3|docx?|xlsx?|pptx?)$/i.test(url.pathname)) continue;
+    let clean: string;
+    try { clean = canonicalizeUrl(url.toString()); } catch { continue; }
+    if (seen.has(clean)) continue;
+    const anchor = `${m[2]} ${url.pathname}`.replace(/<[^>]+>/g, " ").toLowerCase();
+    let score = 0;
+    for (const t of Array.from(terms)) if (anchor.includes(t)) score++;
+    if (!score) continue;
+    seen.add(clean);
+    found.push({ url: clean, score });
+  }
+  return found.sort((a, b) => b.score - a.score).slice(0, limit);
+}
+
 export async function searchProvider(provider: ProviderName, query: string): Promise<SearchHit[]> {
   const knowledgeProvider = providerRegistry.get(provider);
   if (knowledgeProvider) {
     const results = await knowledgeProvider.search(query, 10);
     return results.map((result) => ({ title: result.title, url: result.url, snippet: result.snippet, published: result.published, author: result.author, provider }));
+  }
+  if (provider === "duckDuckGo") {
+    // Keyless general-web search: DuckDuckGo's HTML endpoint needs no API key,
+    // so TruthSearch can browse the whole web (not only encyclopedic APIs) even
+    // with zero paid providers configured.
+    const res = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
+      signal: AbortSignal.timeout(12000),
+      headers: { "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36", accept: "text/html" },
+    });
+    if (!res.ok) throw new Error(`DuckDuckGo returned HTTP ${res.status}`);
+    return parseDuckDuckGoHtml(await res.text());
   }
   if (provider === "wikipedia") {
     const data = await requestJson(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*`);
@@ -382,7 +441,9 @@ function summarizeFetchFailures(failures: string[]): string {
   return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).map(([reason, count]) => `${count} ${reason}`).join(", ");
 }
 
-async function fetchReadable(hit: SearchHit, question: string, failures?: string[]): Promise<SourceRecord | null> {
+type FetchedPage = { record: SourceRecord; html: string };
+
+async function fetchReadable(hit: SearchHit, question: string, failures?: string[]): Promise<FetchedPage | null> {
   try {
     assertSafeUrl(hit.url);
     const canonicalUrl = canonicalizeUrl(hit.url);
@@ -397,7 +458,8 @@ async function fetchReadable(hit: SearchHit, question: string, failures?: string
     const u = new URL(canonicalUrl);
     const passages = content.match(/.{1,900}(?:[.!?]|$)/g)?.map((x) => x.trim()).filter((x) => x.length > 100).slice(0, 30) || [content.slice(0, 900)];
     const relevance = queryContentRelevance(question, `${hit.title} ${hit.snippet} ${content}`);
-    return { ...hit, canonicalUrl, domain: u.hostname, sourceType: classifySource(u.hostname, hit.provider), qualityScore: scoreSource(hit, u.hostname, relevance), content, passages, relevance };
+    const record: SourceRecord = { ...hit, canonicalUrl, domain: u.hostname, sourceType: classifySource(u.hostname, hit.provider), qualityScore: scoreSource(hit, u.hostname, relevance), content, passages, relevance };
+    return { record, html: raw };
   } catch (error) { failures?.push(`${new URL(hit.url).hostname}: ${error instanceof Error ? error.name === "TimeoutError" ? "timed out" : error.message.slice(0, 60) : "fetch failed"}`); return null; }
 }
 
@@ -529,7 +591,7 @@ export async function conductResearch(question: string, onProgress: (p: Research
   }
   const requested = env("SEARCH_PROVIDER");
   const paidEnabled = env("ENABLE_PAID_SEARCH") === "true";
-  const primary = (paidEnabled && (requested === "brave" || requested === "tavily") ? requested : "wikipedia") as ProviderName;
+  const primary = (paidEnabled && (requested === "brave" || requested === "tavily") ? requested : "duckDuckGo") as ProviderName;
   const academic = (env("ACADEMIC_SEARCH_PROVIDER") || "arxiv") as ProviderName;
   const intent = classifyIntent(question);
   const extraProviders = providersForIntent(intent) as ProviderName[];
@@ -546,13 +608,40 @@ export async function conductResearch(question: string, onProgress: (p: Research
   const settled = await Promise.allSettled(planned.map(({ q, provider }) => searchProvider(provider, q)));
   const failures = settled.filter((x): x is PromiseRejectedResult => x.status === "rejected").map((x) => x.reason instanceof Error ? x.reason.message : "Provider failed");
   if (failures.length) onProgress({ stage: "provider-warning", detail: `${failures.length} provider request(s) unavailable; continuing only with completed live results`, at: Date.now() });
-  const hits = settled.filter((x): x is PromiseFulfilledResult<SearchHit[]> => x.status === "fulfilled").flatMap((x) => x.value);
+  let hits = settled.filter((x): x is PromiseFulfilledResult<SearchHit[]> => x.status === "fulfilled").flatMap((x) => x.value);
+  if (primary === "duckDuckGo" && !hits.length) {
+    // Keyless web search came back empty — fall back to the Wikipedia API so
+    // the research still has live sources.
+    onProgress({ stage: "provider-warning", detail: "Keyless web search returned no results; falling back to Wikipedia search", at: Date.now() });
+    try { hits = await searchProvider("wikipedia", queries[0]); } catch { hits = []; }
+  }
   if (!hits.length) onProgress({ stage: "provider-warning", detail: `All live providers were unavailable (${failures.join("; ") || "no results"}). The model will answer from its own knowledge, clearly labeled.`, at: Date.now() });
   const unique = Array.from(new Map(hits.filter((x) => x.url).map((x) => { try { return [canonicalizeUrl(x.url), x] as const; } catch { return [x.url, x] as const; } })).values()).slice(0, Math.min(modeCfg.sourceCap, maxSources));
   onProgress({ stage: "fetching", detail: `Fetched ${unique.length} unique live search results; normalizing permitted public pages`, at: Date.now() });
   const fetchFailures: string[] = [];
-  const sources = (await Promise.all(unique.map((hit) => fetchReadable(hit, question, fetchFailures)))).filter(Boolean) as SourceRecord[];
+  const fetchedPages = (await Promise.all(unique.map((hit) => fetchReadable(hit, question, fetchFailures)))).filter(Boolean) as FetchedPage[];
+  const sources: SourceRecord[] = fetchedPages.map((p) => p.record);
   if (fetchFailures.length) onProgress({ stage: "fetch-warning", detail: `${fetchFailures.length}/${unique.length} pages were not readable (${summarizeFetchFailures(fetchFailures)})`, at: Date.now() });
+  // Browsing hop 2: read the links the best pages point at, the way a person
+  // researching a topic clicks through to the next promising page. Bounded to
+  // 2 seed pages x 4 followed links so a single answer never explodes.
+  if (fetchedPages.length) {
+    const seen = new Set(sources.map((s) => s.canonicalUrl));
+    const hop2Urls: string[] = [];
+    const seedPages = fetchedPages.slice(0, 2);
+    onProgress({ stage: "browsing", detail: `Browsing hop 2: following the most relevant links found on the top ${seedPages.length} fetched page(s)`, at: Date.now() });
+    for (const page of seedPages) {
+      hop2Urls.push(...extractRelevantLinks(page.html, page.record.canonicalUrl, question, seen, 4).map((l) => l.url));
+    }
+    const follow = hop2Urls.slice(0, 4);
+    const hop2 = (await Promise.all(follow.map((url) => fetchReadable({ title: "Followed link", url, snippet: "Link followed while browsing the web", provider: "duckDuckGo" }, question, fetchFailures)))).filter(Boolean) as FetchedPage[];
+    if (hop2.length) {
+      sources.push(...hop2.map((p) => p.record));
+      onProgress({ stage: "browsing", detail: `Browsing hop 2 fetched ${hop2.length} more promising page(s): ${hop2.map((p) => p.record.domain).join(", ")}`, at: Date.now() });
+    } else if (follow.length) {
+      onProgress({ stage: "fetch-warning", detail: `Browsing hop 2 followed ${follow.length} link(s) but none were readable`, at: Date.now() });
+    }
+  }
   if (!sources.length) onProgress({ stage: "fetch-warning", detail: `No readable public sources were retrieved (${summarizeFetchFailures(fetchFailures) || "no failures recorded"}). The model will answer from its own knowledge, clearly labeled.`, at: Date.now() });
   onProgress({ stage: "ranking", detail: "Ranking passages with real BM25 lexical retrieval, free local semantic embeddings, and reciprocal-rank fusion", at: Date.now() });
   let evidence = extractEvidence(question, sources);
