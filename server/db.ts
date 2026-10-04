@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/neon-http";
 import { neon } from "@neondatabase/serverless";
-import { InsertUser, users, researchSessions, researchMessages, researchQueries, researchSources, researchPassages, researchClaims, researchEvidence, researchCitations, localSessions, collections, analyticsEvents } from "../drizzle/schema";
+import { InsertUser, users, researchSessions, researchMessages, researchQueries, researchSources, researchPassages, researchClaims, researchEvidence, researchCitations, localSessions, collections, analyticsEvents, researchFeedback } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 import { SESSION_TTL_MS, newSessionToken } from "./auth-local";
 
@@ -44,6 +44,7 @@ const TABLE_COLUMNS: Record<string, string[]> = {
   visual_explanations: ["id", "analysisId", "text", "version", "createdAt"],
   visual_followups: ["id", "sessionId", "question", "answer", "uncertainties", "provider", "model", "createdAt"],
   visual_feedback: ["id", "analysisId", "userId", "rating", "comment", "createdAt"],
+  research_feedback: ["id", "sessionId", "userId", "rating", "reason", "createdAt"],
   visual_usage: ["id", "userId", "sessionId", "kind", "provider", "model", "promptTokens", "completionTokens", "latencyMs", "createdAt"],
 };
 
@@ -68,6 +69,7 @@ const CREATE_STMTS: Record<string, string> = {
   visual_explanations: `CREATE TABLE IF NOT EXISTS "visual_explanations" ("id" serial PRIMARY KEY NOT NULL, "analysisId" integer NOT NULL, "text" text NOT NULL, "version" integer DEFAULT 1 NOT NULL, "createdAt" timestamp DEFAULT now() NOT NULL);`,
   visual_followups: `CREATE TABLE IF NOT EXISTS "visual_followups" ("id" serial PRIMARY KEY NOT NULL, "sessionId" integer NOT NULL, "question" text NOT NULL, "answer" text NOT NULL, "uncertainties" json, "provider" varchar(64), "model" varchar(160), "createdAt" timestamp DEFAULT now() NOT NULL);`,
   visual_feedback: `CREATE TABLE IF NOT EXISTS "visual_feedback" ("id" serial PRIMARY KEY NOT NULL, "analysisId" integer NOT NULL, "userId" integer, "rating" integer NOT NULL, "comment" text, "createdAt" timestamp DEFAULT now() NOT NULL);`,
+  research_feedback: `CREATE TABLE IF NOT EXISTS "research_feedback" ("id" serial PRIMARY KEY NOT NULL, "sessionId" integer NOT NULL, "userId" integer, "rating" integer NOT NULL, "reason" varchar(64), "createdAt" timestamp DEFAULT now() NOT NULL);`,
   visual_usage: `CREATE TABLE IF NOT EXISTS "visual_usage" ("id" serial PRIMARY KEY NOT NULL, "userId" integer, "sessionId" integer, "kind" varchar(32) NOT NULL, "provider" varchar(64), "model" varchar(160), "promptTokens" integer, "completionTokens" integer, "latencyMs" integer, "createdAt" timestamp DEFAULT now() NOT NULL);`,
 };
 
@@ -345,6 +347,8 @@ export async function setSessionCollection(sessionId: number, userId: number, co
   }
   await db.update(researchSessions).set({ collectionId }).where(eq(researchSessions.id, sessionId));
 }
+
+export async function recordResearchFeedback(sessionId: number, userId: number | null, helpful: boolean, reason: string | null) { const db = await getDb(); if (!db) return; await db.insert(researchFeedback).values({ sessionId, userId, rating: helpful ? 1 : 0, reason }); }
 
 export async function recordEvent(type: string, userId: number | null, meta: Record<string, unknown> | null = null) {
   const db = await getDb();

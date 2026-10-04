@@ -129,6 +129,15 @@ export const collections = pgTable("collections", {
   createdAt: timestamp("createdAt", { mode: "date" }).defaultNow().notNull(),
 });
 
+export const researchFeedback = pgTable("research_feedback", {
+  id: serial("id").primaryKey(),
+  sessionId: integer("sessionId").notNull(),
+  userId: integer("userId"),
+  rating: integer("rating").notNull(),
+  reason: varchar("reason", { length: 64 }),
+  createdAt: timestamp("createdAt", { mode: "date" }).defaultNow().notNull(),
+});
+
 export const analyticsEvents = pgTable("analytics_events", {
   id: serial("id").primaryKey(),
   userId: integer("userId"),

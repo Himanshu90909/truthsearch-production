@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bm25Like, canonicalizeUrl, classifyIntent, classifySource, detectContradictions, makeQueries, queryContentRelevance, rankEvidence, reciprocalRankFusion, scoreSource, verifyEvidence } from "./research";
+import { bm25Like, canonicalizeUrl, classifyIntent, classifySource, detectContradictions, makeQueries, needsExternalEvidence, queryContentRelevance, rankEvidence, reciprocalRankFusion, scoreSource, verifyEvidence } from "./research";
 
 describe("research primitives", () => {
   it("canonicalizes tracking parameters and fragments", () => {
@@ -89,6 +89,27 @@ describe("intent classification for direct technical answers", () => {
     expect(classifyIntent("how do I fix a TypeError in my python code")).toBe("programming");
     expect(classifyIntent("write a function to reverse a linked list in javascript")).toBe("programming");
     expect(classifyIntent("why do LLMs hallucinate?")).toBe("general_research");
+  });
+});
+
+describe("intelligent tool router", () => {
+  it("answers knowledge questions directly and searches time-sensitive ones", () => {
+    // Direct answers — no web search needed (master prompt §3/§5)
+    expect(needsExternalEvidence("What is a linked list? Explain with an example.", "quick")).toBe(false);
+    expect(needsExternalEvidence("Explain binary search like I am a beginner", "quick")).toBe(false);
+    expect(needsExternalEvidence("Write Java code for merge sort", "quick")).toBe(false);
+    expect(needsExternalEvidence("Explain this Java code and find the bug", "quick")).toBe(false);
+    expect(needsExternalEvidence("Solve this LeetCode problem from the screenshot", "quick")).toBe(false);
+    // Web research required
+    expect(needsExternalEvidence("What is the latest React version?", "quick")).toBe(true);
+    expect(needsExternalEvidence("What happened in AI this week?", "quick")).toBe(true);
+    expect(needsExternalEvidence("Compare AWS Lambda and Google Cloud Run", "quick")).toBe(true);
+    expect(needsExternalEvidence("Search the web for the current Bitcoin price", "quick")).toBe(true);
+    expect(needsExternalEvidence("What is the latest release of Node.js?", "quick")).toBe(true);
+    // Research modes always run the evidence pipeline
+    expect(needsExternalEvidence("What is a linked list?", "deep")).toBe(true);
+    expect(needsExternalEvidence("What is a linked list?", "academic")).toBe(true);
+    expect(needsExternalEvidence("Is this claim true?", "verify")).toBe(true);
   });
 });
 
