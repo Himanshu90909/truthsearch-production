@@ -628,7 +628,8 @@ export async function conductResearch(question: string, onProgress: (p: Research
   if (fetchedPages.length) {
     const seen = new Set(sources.map((s) => s.canonicalUrl));
     const hop2Urls: string[] = [];
-    const seedPages = fetchedPages.slice(0, 2);
+    // seed from the pages most relevant to the question, not just the first fetched
+    const seedPages = [...fetchedPages].sort((a, b) => b.record.relevance - a.record.relevance).slice(0, 2);
     onProgress({ stage: "browsing", detail: `Browsing hop 2: following the most relevant links found on the top ${seedPages.length} fetched page(s)`, at: Date.now() });
     for (const page of seedPages) {
       hop2Urls.push(...extractRelevantLinks(page.html, page.record.canonicalUrl, question, seen, 4).map((l) => l.url));
