@@ -437,34 +437,55 @@ export async function callSynthesisLLM(params: Parameters<typeof invokeLLM>[0], 
   for (const provider of providers) {
     const candidates = provider.models[kind];
     for (const model of candidates) {
-      try {
-        const res = await fetch(provider.endpoint, {
-          method: "POST",
-          headers: { "content-type": "application/json", authorization: `Bearer ${provider.apiKey}` },
-          body: JSON.stringify({
-            model,
-            messages: params.messages,
-            temperature: 0.3,
-            max_tokens: 4096,
-          }),
-          signal: AbortSignal.timeout(Math.max(timeoutMs, 120000)),
-        });
-        if (!res.ok) {
-          const detail = (await res.text().catch(() => "")).slice(0, 200);
-          failures.push(`${provider.name}/${model} returned HTTP ${res.status}: ${detail}`);
-          continue;
+      // Keyless gateways (Pollinations) throttle bursts with 402/429, and any
+      // provider can throw a transient 5xx. Retry with backoff before giving
+      // up on a model — a single throttled request must not fail the answer.
+      // Under test, run the retry loop with zero-delay/zero-attempt config so
+      // cascade behavior is exercised deterministically without real sleeps.
+      const RETRY_DELAYS_MS: number[] = process.env.NODE_ENV === "test" ? [] : [5000, 15000, 30000];
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const res = await fetch(provider.endpoint, {
+            method: "POST",
+            headers: { "content-type": "application/json", authorization: `Bearer ${provider.apiKey}` },
+            body: JSON.stringify({
+              model,
+              messages: params.messages,
+              temperature: 0.3,
+              max_tokens: 4096,
+            }),
+            signal: AbortSignal.timeout(Math.max(timeoutMs, 120000)),
+          });
+          if (!res.ok) {
+            const detail = (await res.text().catch(() => "")).slice(0, 200);
+            const transient = [402, 408, 425, 429, 500, 502, 503, 504].includes(res.status);
+            if (transient && attempt < RETRY_DELAYS_MS.length) {
+              failures.push(`${provider.name}/${model} returned HTTP ${res.status} (attempt ${attempt + 1}) — retrying in ${RETRY_DELAYS_MS[attempt] / 1000}s`);
+              await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+              continue;
+            }
+            failures.push(`${provider.name}/${model} returned HTTP ${res.status}: ${detail}`);
+            break;
+          }
+          const data = (await res.json()) as Awaited<ReturnType<typeof invokeLLM>>;
+          const rawContent = data.choices?.[0]?.message?.content;
+          const content = typeof rawContent === "string" ? rawContent : Array.isArray(rawContent) ? rawContent.map((part) => typeof part === "string" ? part : "text" in part ? part.text : "").join("") : "";
+          if (!content.trim()) {
+            // Reasoning models can exhaust tokens on hidden reasoning and return null content — cascade instead of answering blank.
+            failures.push(`${provider.name}/${model} returned an empty answer (reasoning did not complete)`);
+            break;
+          }
+          return data;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "request failed";
+          if (attempt < RETRY_DELAYS_MS.length) {
+            failures.push(`${provider.name}/${model}: ${message} (attempt ${attempt + 1}) — retrying in ${RETRY_DELAYS_MS[attempt] / 1000}s`);
+            await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+            continue;
+          }
+          failures.push(`${provider.name}/${model}: ${message}`);
+          break;
         }
-        const data = (await res.json()) as Awaited<ReturnType<typeof invokeLLM>>;
-        const rawContent = data.choices?.[0]?.message?.content;
-        const content = typeof rawContent === "string" ? rawContent : Array.isArray(rawContent) ? rawContent.map((part) => typeof part === "string" ? part : "text" in part ? part.text : "").join("") : "";
-        if (!content.trim()) {
-          // Reasoning models can exhaust tokens on hidden reasoning and return null content — cascade instead of answering blank.
-          failures.push(`${provider.name}/${model} returned an empty answer (reasoning did not complete)`);
-          continue;
-        }
-        return data;
-      } catch (error) {
-        failures.push(`${provider.name}/${model}: ${error instanceof Error ? error.message : "request failed"}`);
       }
     }
   }
