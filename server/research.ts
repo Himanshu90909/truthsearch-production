@@ -604,7 +604,12 @@ export async function conductResearch(question: string, onProgress: (p: Research
   // primary provider — Wikipedia's fuzzy full-text search treats extra filler words as additional
   // OR-matched terms and drifts toward unrelated pages that happen to contain them. Filler-suffixed
   // variants are routed to academic providers instead, where that phrasing is actually meaningful.
-  const planned = queries.map((q, i) => ({ q, provider: mode === "academic" ? freeAcademic[i % freeAcademic.length] : i === 0 ? primary : i < 6 ? freeAcademic[(i - 1) % freeAcademic.length] : extraProviders[(i - 6) % Math.max(extraProviders.length, 1)] || "wikidata" }));
+  // Filler-suffixed query variants ("... latest evidence") are meaningful for
+  // academic providers, but for general/current-events questions they OR-match
+  // random papers and drown the answer in off-topic abstracts — so web-type
+  // intents route every query to the general-web provider instead.
+  const academicIntent = mode === "academic" || intent === "academic_research";
+  const planned = queries.map((q, i) => ({ q, provider: academicIntent ? freeAcademic[i % freeAcademic.length] : i === 0 ? primary : i < 6 ? (primary === "duckDuckGo" ? primary : freeAcademic[(i - 1) % freeAcademic.length]) : extraProviders[(i - 6) % Math.max(extraProviders.length, 1)] || "wikidata" }));
   const settled = await Promise.allSettled(planned.map(({ q, provider }) => searchProvider(provider, q)));
   const failures = settled.filter((x): x is PromiseRejectedResult => x.status === "rejected").map((x) => x.reason instanceof Error ? x.reason.message : "Provider failed");
   if (failures.length) onProgress({ stage: "provider-warning", detail: `${failures.length} provider request(s) unavailable; continuing only with completed live results`, at: Date.now() });
@@ -629,7 +634,7 @@ export async function conductResearch(question: string, onProgress: (p: Research
     const seen = new Set(sources.map((s) => s.canonicalUrl));
     const hop2Urls: string[] = [];
     // seed from the pages most relevant to the question, not just the first fetched
-    const seedPages = [...fetchedPages].sort((a, b) => b.record.relevance - a.record.relevance).slice(0, 2);
+    const seedPages = [...fetchedPages].sort((a, b) => (b.record.relevance || 0) - (a.record.relevance || 0)).slice(0, 2);
     onProgress({ stage: "browsing", detail: `Browsing hop 2: following the most relevant links found on the top ${seedPages.length} fetched page(s)`, at: Date.now() });
     for (const page of seedPages) {
       hop2Urls.push(...extractRelevantLinks(page.html, page.record.canonicalUrl, question, seen, 4).map((l) => l.url));
