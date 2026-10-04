@@ -41,7 +41,7 @@ See [`STARTUP.md`](STARTUP.md) for the full architecture map and the phased road
 
 ## No-card operating mode
 
-The default web adapter is the public Wikipedia API and the default academic adapter is Semantic Scholar. These services may be rate-limited and are not a guarantee of broad web coverage, but they allow development and real queries without purchasing a search card. For stronger general-web coverage, configure Brave or Tavily using project secrets; if a selected paid provider is not configured, the session fails explicitly rather than falling back to fabricated data.
+The default web adapter is keyless DuckDuckGo search (no API card needed) with the public Wikipedia API as automatic fallback; the default academic adapter is Semantic Scholar. After the first fetch round, the research agent also browses hop 2: it follows the most relevant links on the top fetched pages (bounded to 2 pages x 4 links) and reads them as extra sources. For even stronger coverage, configure Brave or Tavily using project secrets; if a selected paid provider is not configured, the session fails explicitly rather than falling back to fabricated data.
 
 **No-key extractive mode**: when no synthesis model is configured at all (`HF_API_KEY`, `GEMINI_API_KEY`, `XAI_API_KEY` all absent), research still completes — the answer is an extractive digest composed entirely of the top-ranked verified passages, each cited `[n]`, with a clear "Extractive answer" banner and a limitations note. No model knowledge is used, so nothing is unlabeled.
 
