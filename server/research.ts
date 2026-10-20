@@ -276,6 +276,7 @@ export function scoreSource(hit: SearchHit, domain: string, relevance = 0): numb
 // Single synthesis backend (like Perplexity: one model, no user-facing choice)
 //
 // Synthesis is provider-agnostic with an explicit fallback chain:
+//   0. FreeLLMAPI self-hosted aggregator/router (FREELLMAPI_BASE_URL + FREELLMAPI_API_KEY)
 //   1. Hugging Face Inference Providers (HF_API_KEY)
 //   2. Google Gemini OpenAI-compatible endpoint (GEMINI_API_KEY)
 //   3. Groq OpenAI-compatible endpoint (XAI_API_KEY or GROQ_API_KEY)
@@ -292,6 +293,29 @@ type ProviderConfig = {
 
 export function synthesisProviders(): ProviderConfig[] {
   const providers: ProviderConfig[] = [];
+  // 0. FreeLLMAPI (github.com/tashfeenahmed/freellmapi) — a self-hosted
+  // OpenAI-compatible aggregator behind a single /v1 endpoint: 34 free-tier
+  // providers, one unified key, and a router that picks the best available
+  // model and fails over on rate limits. `auto` lets its router choose;
+  // FREELLMAPI_MODEL pins a specific model, and per-kind overrides
+  // (FREELLMAPI_MODEL_VISION / _CODE / _GENERAL) are honored too. The router
+  // also accepts vision input, so it serves all three kinds.
+  const freellmapiBase = env("FREELLMAPI_BASE_URL");
+  const freellmapiKey = env("FREELLMAPI_API_KEY");
+  if (freellmapiBase && freellmapiKey) {
+    const base = freellmapiBase.replace(/\/+$/, "").replace(/\/v1$/, "");
+    const defaultModel = env("FREELLMAPI_MODEL") || "auto";
+    providers.push({
+      name: "freellmapi",
+      endpoint: `${base}/v1/chat/completions`,
+      apiKey: freellmapiKey,
+      models: {
+        vision: [env("FREELLMAPI_MODEL_VISION") || defaultModel],
+        code: [env("FREELLMAPI_MODEL_CODE") || defaultModel],
+        general: [env("FREELLMAPI_MODEL_GENERAL") || defaultModel],
+      },
+    });
+  }
   const hfKey = env("HF_API_KEY");
   if (hfKey) {
     providers.push({
@@ -422,7 +446,7 @@ export function extractiveFallbackAnswer(question: string, evidence: EvidenceRec
     ? conflicts.map((c) => `- ${c.description || "Mixed statements were found across sources."}`).join("\n")
     : "The retrieved sources are consistent.");
   sections.push("## Limitations");
-  sections.push("This deployment has no synthesis model configured, so the answer cannot reason across sources — only quote them. Add `HF_API_KEY`, `GEMINI_API_KEY`, or `XAI_API_KEY` (Groq) to enable full analysis.");
+  sections.push("This deployment has no synthesis model configured, so the answer cannot reason across sources — only quote them. Add `FREELLMAPI_BASE_URL` + `FREELLMAPI_API_KEY`, `HF_API_KEY`, `GEMINI_API_KEY`, or `XAI_API_KEY` (Groq) to enable full analysis.");
   sections.push("## Conclusion");
   sections.push(top.length ? `The strongest retrieved evidence is quoted above; see citations [1]-[${Math.min(evidence.length, 8)}].` : "");
   return sections.filter(Boolean).join("\n\n");
@@ -431,7 +455,7 @@ export function extractiveFallbackAnswer(question: string, evidence: EvidenceRec
 export async function callSynthesisLLM(params: Parameters<typeof invokeLLM>[0], kind: "vision" | "code" | "general" = "general"): Promise<Awaited<ReturnType<typeof invokeLLM>>> {
   const providers = synthesisProviders();
   if (!providers.length) {
-    throw new Error("Synthesis model is not configured: set HF_API_KEY, GEMINI_API_KEY, or XAI_API_KEY (Groq). No answer was generated.");
+    throw new Error("Synthesis model is not configured: set FREELLMAPI_BASE_URL + FREELLMAPI_API_KEY, HF_API_KEY, GEMINI_API_KEY, or XAI_API_KEY (Groq). No answer was generated.");
   }
   const failures: string[] = [];
   for (const provider of providers) {
@@ -713,7 +737,7 @@ async function answerDirectly(question: string, userAttachments: UserAttachments
   const userMessageContent: any = imageParts.length && visionSynthesisAvailable ? [{ type: "text", text: instruction }, ...imageParts] : instruction;
 
   if (!synthesisModelConfigured()) {
-    throw new Error("No synthesis model is configured, so direct answers are unavailable. Set HF_API_KEY, GEMINI_API_KEY, XAI_API_KEY, GROQ_API_KEY — or run the question in a research mode.");
+    throw new Error("No synthesis model is configured, so direct answers are unavailable. Set FREELLMAPI_BASE_URL + FREELLMAPI_API_KEY, HF_API_KEY, GEMINI_API_KEY, XAI_API_KEY, GROQ_API_KEY — or run the question in a research mode.");
   }
   onProgress({ stage: "synthesizing", detail: "Composing a direct answer from the model", at: Date.now() });
   const response = await callSynthesisLLM({ messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userMessageContent }] }, imageParts.length && visionSynthesisAvailable ? "vision" : technicalQuestion ? "code" : "general");
@@ -901,7 +925,7 @@ export async function conductResearch(question: string, onProgress: (p: Research
   let answer: string;
   if (!synthesisModelConfigured()) {
     if (!evidence.length && !userAttachments?.contextText && !imageAnalysisText) {
-      throw new Error("No synthesis model is configured and no readable sources were retrieved, so no answer can be produced. Set HF_API_KEY, GEMINI_API_KEY, or XAI_API_KEY (Groq).");
+      throw new Error("No synthesis model is configured and no readable sources were retrieved, so no answer can be produced. Set FREELLMAPI_BASE_URL + FREELLMAPI_API_KEY, HF_API_KEY, GEMINI_API_KEY, or XAI_API_KEY (Groq).");
     }
     onProgress({ stage: "synthesizing", detail: "No synthesis model configured — composing an extractive digest from the top verified passages and any attached documents/images (no model knowledge)", at: Date.now() });
     answer = extractiveFallbackAnswer(question, evidence, conflicts, mode, { contextText: userAttachments?.contextText, docChunks, imageAnalysisText, imageAnalysisNote });

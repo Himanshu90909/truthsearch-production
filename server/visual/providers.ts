@@ -23,6 +23,14 @@ export function visionProviders(): VisionProvider[] {
   if (customUrl && customKey && customModel) {
     providers.push({ name: "custom", endpoint: customUrl.replace(/\/$/, ""), apiKey: customKey, model: customModel });
   }
+  // FreeLLMAPI self-hosted aggregator/router (OpenAI-compatible, vision-capable
+  // models routed via `auto`). Same env vars as the research synthesis chain.
+  const freellmapiBase = env("FREELLMAPI_BASE_URL");
+  const freellmapiKey = env("FREELLMAPI_API_KEY");
+  if (freellmapiBase && freellmapiKey) {
+    const base = freellmapiBase.replace(/\/+$/, "").replace(/\/v1$/, "");
+    providers.push({ name: "freellmapi", endpoint: `${base}/v1/chat/completions`, apiKey: freellmapiKey, model: env("FREELLMAPI_MODEL_VISION") || env("FREELLMAPI_MODEL") || "auto" });
+  }
   const geminiKey = env("GEMINI_API_KEY");
   if (geminiKey) {
     providers.push({ name: "gemini", endpoint: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", apiKey: geminiKey, model: env("VISION_MODEL_GEMINI") || "gemini-2.0-flash" });
@@ -97,7 +105,7 @@ const extractContent = (payload: any): string => {
 // Non-streaming JSON-style call with provider fallback.
 export async function invokeVision(options: VisionInvokeOptions): Promise<VisionResult> {
   const providers = visionProviders();
-  if (!providers.length) throw new Error("No vision model is configured. Set GEMINI_API_KEY, HF_API_KEY, GROQ_API_KEY, or VISION_API_URL + VISION_API_KEY + VISION_MODEL.");
+  if (!providers.length) throw new Error("No vision model is configured. Set FREELLMAPI_BASE_URL + FREELLMAPI_API_KEY, GEMINI_API_KEY, HF_API_KEY, GROQ_API_KEY, or VISION_API_URL + VISION_API_KEY + VISION_MODEL.");
   let lastError: Error | null = null;
   for (const provider of providers) {
     const startedAt = Date.now();
@@ -131,7 +139,7 @@ export async function invokeVision(options: VisionInvokeOptions): Promise<Vision
 // Yields text deltas as they arrive.
 export async function* invokeVisionStream(options: VisionInvokeOptions): AsyncGenerator<{ delta: string; provider: string; model: string }, void, void> {
   const providers = visionProviders();
-  if (!providers.length) throw new Error("No vision model is configured. Set GEMINI_API_KEY, HF_API_KEY, GROQ_API_KEY, or VISION_API_URL + VISION_API_KEY + VISION_MODEL.");
+  if (!providers.length) throw new Error("No vision model is configured. Set FREELLMAPI_BASE_URL + FREELLMAPI_API_KEY, GEMINI_API_KEY, HF_API_KEY, GROQ_API_KEY, or VISION_API_URL + VISION_API_KEY + VISION_MODEL.");
   let lastError: Error | null = null;
   for (const provider of providers) {
     let response: Response;

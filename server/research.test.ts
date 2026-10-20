@@ -148,6 +148,30 @@ describe("single synthesis backend", () => {
     process.env = before;
     if (savedNodeEnv !== undefined) process.env.NODE_ENV = savedNodeEnv;
   });
+  it("registers FreeLLMAPI as the top synthesis provider when FREELLMAPI_BASE_URL + FREELLMAPI_API_KEY are set, normalizing the base URL", async () => {
+    const before = { ...process.env };
+    delete process.env.HF_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.XAI_API_KEY;
+    delete process.env.GROQ_API_KEY;
+    process.env.FREELLMAPI_BASE_URL = "https://freellmapi.example.com/v1/"; // trailing /v1/ and slash must normalize
+    process.env.FREELLMAPI_API_KEY = "freellmapi-test-key";
+    const { synthesisProviders } = await import("./research");
+    const providers = synthesisProviders();
+    expect(providers[0].name).toBe("freellmapi");
+    expect(providers[0].endpoint).toBe("https://freellmapi.example.com/v1/chat/completions");
+    expect(providers[0].apiKey).toBe("freellmapi-test-key");
+    expect(providers[0].models.general).toEqual(["auto"]); // router picks by default
+    // per-kind model overrides are honored
+    process.env.FREELLMAPI_MODEL_CODE = "gemini-2.5-flash";
+    const overridden = synthesisProviders()[0].models;
+    expect(overridden.code).toEqual(["gemini-2.5-flash"]);
+    expect(overridden.general).toEqual(["auto"]);
+    delete process.env.FREELLMAPI_BASE_URL;
+    delete process.env.FREELLMAPI_API_KEY;
+    delete process.env.FREELLMAPI_MODEL_CODE;
+    process.env = before;
+  });
   it("cascades to the fallback model when Qwen3.8-27B fails, by question kind", async () => {
     const before = { ...process.env };
     process.env.HF_API_KEY = "hf_test_token";

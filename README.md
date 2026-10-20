@@ -43,7 +43,19 @@ See [`STARTUP.md`](STARTUP.md) for the full architecture map and the phased road
 
 The default web adapter is keyless DuckDuckGo search (no API card needed) with the public Wikipedia API as automatic fallback; the default academic adapter is Semantic Scholar. After the first fetch round, the research agent also browses hop 2: it follows the most relevant links on the top fetched pages (bounded to 2 pages x 4 links) and reads them as extra sources. For even stronger coverage, configure Brave or Tavily using project secrets; if a selected paid provider is not configured, the session fails explicitly rather than falling back to fabricated data.
 
-**No-key extractive mode**: when no synthesis model is configured at all (`HF_API_KEY`, `GEMINI_API_KEY`, `XAI_API_KEY` all absent), research still completes — the answer is an extractive digest composed entirely of the top-ranked verified passages, each cited `[n]`, with a clear "Extractive answer" banner and a limitations note. No model knowledge is used, so nothing is unlabeled.
+**No-key extractive mode**: when no synthesis model is configured at all (`FREELLMAPI_BASE_URL`+`FREELLMAPI_API_KEY`, `HF_API_KEY`, `GEMINI_API_KEY`, `XAI_API_KEY` all absent), research still completes — the answer is an extractive digest composed entirely of the top-ranked verified passages, each cited `[n]`, with a clear "Extractive answer" banner and a limitations note. No model knowledge is used, so nothing is unlabeled.
+
+## FreeLLMAPI integration (free self-hosted LLM backend)
+
+TruthSearch's synthesis and vision chains accept any OpenAI-compatible endpoint, including a self-hosted [FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi) router: 34 free-tier providers behind one `/v1` endpoint, with per-key quota tracking and automatic failover when a provider is rate-limited.
+
+**Setup** — run FreeLLMAPI (Docker: `docker run -p 3001:3001 ghcr.io/tashfeenahmed/freellmapi`, or see its [install guide](https://github.com/tashfeenahmed/freellmapi/blob/main/docs/en/install/01-install.md)), add your free provider keys in its dashboard, create a unified key, then set on the TruthSearch deployment:
+
+- `FREELLMAPI_BASE_URL` — your instance's URL, e.g. `http://localhost:3001` (a trailing `/v1` is tolerated)
+- `FREELLMAPI_API_KEY` — the unified key from the Keys page (`freellmapi-…`)
+- `FREELLMAPI_MODEL` (optional) — pin a specific model; defaults to `auto`, letting the router pick the best available free model and fall over on rate limits. Per-kind overrides: `FREELLMAPI_MODEL_VISION`, `FREELLMAPI_MODEL_CODE`, `FREELLMAPI_MODEL_GENERAL`
+
+When configured, FreeLLMAPI is tried first in the synthesis chain (ahead of Hugging Face, Gemini, and Groq) and serves the vision chain as well; existing providers remain as fallbacks, and the zero-key extractive mode still applies when nothing is configured.
 
 ## Research boundary
 

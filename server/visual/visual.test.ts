@@ -175,6 +175,22 @@ describe("vision provider chain", () => {
   });
 });
 
+describe("vision provider chain (FreeLLMAPI)", () => {
+  it("registers the FreeLLMAPI router as a vision provider and ranks it behind the explicit custom override", () => {
+    vi.stubEnv("FREELLMAPI_BASE_URL", "https://freellmapi.example.com");
+    vi.stubEnv("FREELLMAPI_API_KEY", "freellmapi-test-key");
+    const providers = visionProviders();
+    expect(providers.some((p) => p.name === "freellmapi")).toBe(true);
+    const custom = providers.findIndex((p) => p.name === "custom");
+    const freellmapi = providers.findIndex((p) => p.name === "freellmapi");
+    expect(custom).toBe(0);
+    expect(freellmapi).toBe(1);
+    const fl = providers[freellmapi];
+    expect(fl.endpoint).toBe("https://freellmapi.example.com/v1/chat/completions");
+    expect(fl.model).toBe("auto");
+  });
+});
+
 describe("full analysis pipeline (stub provider)", () => {
   it("validates, sanitises and renders a complete analysis", async () => {
     stubVisionResponse({ choices: [{ message: { role: "assistant", content: `Here is the analysis:\n\`\`\`json\n${JSON.stringify(VALID_ANALYSIS)}\n\`\`\`` } }], usage: { prompt_tokens: 900, completion_tokens: 500 } });
