@@ -175,6 +175,21 @@ describe("vision provider chain", () => {
   });
 });
 
+describe("vision provider chain (NVIDIA NIM)", () => {
+  it("registers the NVIDIA omni vision provider and ranks it behind the explicit custom override", () => {
+    vi.stubEnv("NVIDIA_API_KEY", "nvapi-test-key");
+    const providers = visionProviders();
+    const nv = providers.find((p) => p.name === "nvidia");
+    expect(nv).toBeTruthy();
+    expect(nv!.endpoint).toBe("https://integrate.api.nvidia.com/v1/chat/completions");
+    expect(nv!.model).toBe("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning");
+    // NVIDIA_MODEL_VISION pins a different model
+    vi.stubEnv("NVIDIA_MODEL_VISION", "nvidia/nemotron-3.5-super-vl-120b-a12b");
+    expect(visionProviders().find((p) => p.name === "nvidia")!.model).toBe("nvidia/nemotron-3.5-super-vl-120b-a12b");
+    vi.unstubAllEnvs();
+  });
+});
+
 describe("vision provider chain (FreeLLMAPI)", () => {
   it("registers the FreeLLMAPI router as a vision provider and ranks it behind the explicit custom override", () => {
     vi.stubEnv("FREELLMAPI_BASE_URL", "https://freellmapi.example.com");

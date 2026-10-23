@@ -148,6 +148,42 @@ describe("single synthesis backend", () => {
     process.env = before;
     if (savedNodeEnv !== undefined) process.env.NODE_ENV = savedNodeEnv;
   });
+  it("registers NVIDIA NIM as the top synthesis provider when NVIDIA_API_KEY is set, defaulting to Nemotron 3 Ultra", async () => {
+    const before = { ...process.env };
+    delete process.env.HF_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.XAI_API_KEY;
+    delete process.env.GROQ_API_KEY;
+    delete process.env.FREELLMAPI_BASE_URL;
+    delete process.env.FREELLMAPI_API_KEY;
+    process.env.NVIDIA_API_KEY = "nvapi-test-key";
+    const { synthesisProviders } = await import("./research");
+    const providers = synthesisProviders();
+    expect(providers[0].name).toBe("nvidia");
+    expect(providers[0].endpoint).toBe("https://integrate.api.nvidia.com/v1/chat/completions");
+    expect(providers[0].apiKey).toBe("nvapi-test-key");
+    expect(providers[0].models.general).toEqual(["nvidia/nemotron-3-ultra-550b-a55b"]);
+    expect(providers[0].models.code).toEqual(["nvidia/nemotron-3-ultra-550b-a55b"]);
+    expect(providers[0].models.vision).toEqual(["nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"]);
+    // custom base URL with trailing /v1/ normalizes, and per-kind overrides are honored
+    process.env.NVIDIA_BASE_URL = "https://nim.example.com/v1/";
+    process.env.NVIDIA_MODEL_CODE = "nvidia/nemotron-3.5-lightning-30b-a3b";
+    const overridden = synthesisProviders()[0];
+    expect(overridden.endpoint).toBe("https://nim.example.com/v1/chat/completions");
+    expect(overridden.models.code).toEqual(["nvidia/nemotron-3.5-lightning-30b-a3b"]);
+    expect(overridden.models.general).toEqual(["nvidia/nemotron-3-ultra-550b-a55b"]);
+    // NVIDIA outranks FreeLLMAPI when both are configured
+    process.env.FREELLMAPI_BASE_URL = "https://freellmapi.example.com";
+    process.env.FREELLMAPI_API_KEY = "freellmapi-test-key";
+    expect(synthesisProviders()[0].name).toBe("nvidia");
+    expect(synthesisProviders()[1].name).toBe("freellmapi");
+    delete process.env.NVIDIA_API_KEY;
+    delete process.env.NVIDIA_BASE_URL;
+    delete process.env.NVIDIA_MODEL_CODE;
+    delete process.env.FREELLMAPI_BASE_URL;
+    delete process.env.FREELLMAPI_API_KEY;
+    process.env = before;
+  });
   it("registers FreeLLMAPI as the top synthesis provider when FREELLMAPI_BASE_URL + FREELLMAPI_API_KEY are set, normalizing the base URL", async () => {
     const before = { ...process.env };
     delete process.env.HF_API_KEY;

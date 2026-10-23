@@ -276,10 +276,11 @@ export function scoreSource(hit: SearchHit, domain: string, relevance = 0): numb
 // Single synthesis backend (like Perplexity: one model, no user-facing choice)
 //
 // Synthesis is provider-agnostic with an explicit fallback chain:
-//   0. FreeLLMAPI self-hosted aggregator/router (FREELLMAPI_BASE_URL + FREELLMAPI_API_KEY)
-//   1. Hugging Face Inference Providers (HF_API_KEY)
-//   2. Google Gemini OpenAI-compatible endpoint (GEMINI_API_KEY)
-//   3. Groq OpenAI-compatible endpoint (XAI_API_KEY or GROQ_API_KEY)
+//   0. NVIDIA NIM hosted inference (NVIDIA_API_KEY, build.nvidia.com)
+//   1. FreeLLMAPI self-hosted aggregator/router (FREELLMAPI_BASE_URL + FREELLMAPI_API_KEY)
+//   2. Hugging Face Inference Providers (HF_API_KEY)
+//   3. Google Gemini OpenAI-compatible endpoint (GEMINI_API_KEY)
+//   4. Groq OpenAI-compatible endpoint (XAI_API_KEY or GROQ_API_KEY)
 // Every provider speaks the OpenAI chat-completions shape, so the pipeline
 // tries each configured provider in order and fails honestly only when none
 // is configured — no fabricated answers, ever.
@@ -293,7 +294,29 @@ type ProviderConfig = {
 
 export function synthesisProviders(): ProviderConfig[] {
   const providers: ProviderConfig[] = [];
-  // 0. FreeLLMAPI (github.com/tashfeenahmed/freellmapi) — a self-hosted
+  // 0. NVIDIA NIM (build.nvidia.com) — NVIDIA's hosted inference API with a
+  // generous free endpoint, fully OpenAI-compatible. Defaults to the flagship
+  // Nemotron 3 Ultra (hybrid Mamba-Transformer MoE, 550B-A55B, 1M context) —
+  // NVIDIA's newest frontier model — for code/general synthesis, and the
+  // omni-modal Nemotron 3 Nano Omni for vision (it accepts image_url input).
+  // NVIDIA_MODEL pins a specific model; per-kind overrides
+  // (NVIDIA_MODEL_VISION / _CODE / _GENERAL) are honored too.
+  const nvidiaKey = env("NVIDIA_API_KEY");
+  if (nvidiaKey) {
+    const nvidiaBase = (env("NVIDIA_BASE_URL") || "https://integrate.api.nvidia.com/v1").replace(/\/+$/, "").replace(/\/v1$/, "");
+    const nvidiaDefaultModel = env("NVIDIA_MODEL") || "nvidia/nemotron-3-ultra-550b-a55b";
+    providers.push({
+      name: "nvidia",
+      endpoint: `${nvidiaBase}/v1/chat/completions`,
+      apiKey: nvidiaKey,
+      models: {
+        vision: [env("NVIDIA_MODEL_VISION") || "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"],
+        code: [env("NVIDIA_MODEL_CODE") || nvidiaDefaultModel],
+        general: [env("NVIDIA_MODEL_GENERAL") || nvidiaDefaultModel],
+      },
+    });
+  }
+  // 1. FreeLLMAPI (github.com/tashfeenahmed/freellmapi) — a self-hosted
   // OpenAI-compatible aggregator behind a single /v1 endpoint: 34 free-tier
   // providers, one unified key, and a router that picks the best available
   // model and fails over on rate limits. `auto` lets its router choose;
@@ -446,7 +469,7 @@ export function extractiveFallbackAnswer(question: string, evidence: EvidenceRec
     ? conflicts.map((c) => `- ${c.description || "Mixed statements were found across sources."}`).join("\n")
     : "The retrieved sources are consistent.");
   sections.push("## Limitations");
-  sections.push("This deployment has no synthesis model configured, so the answer cannot reason across sources — only quote them. Add `FREELLMAPI_BASE_URL` + `FREELLMAPI_API_KEY`, `HF_API_KEY`, `GEMINI_API_KEY`, or `XAI_API_KEY` (Groq) to enable full analysis.");
+  sections.push("This deployment has no synthesis model configured, so the answer cannot reason across sources — only quote them. Add `NVIDIA_API_KEY`, `FREELLMAPI_BASE_URL` + `FREELLMAPI_API_KEY`, `HF_API_KEY`, `GEMINI_API_KEY`, or `XAI_API_KEY` (Groq) to enable full analysis.");
   sections.push("## Conclusion");
   sections.push(top.length ? `The strongest retrieved evidence is quoted above; see citations [1]-[${Math.min(evidence.length, 8)}].` : "");
   return sections.filter(Boolean).join("\n\n");
@@ -455,7 +478,7 @@ export function extractiveFallbackAnswer(question: string, evidence: EvidenceRec
 export async function callSynthesisLLM(params: Parameters<typeof invokeLLM>[0], kind: "vision" | "code" | "general" = "general"): Promise<Awaited<ReturnType<typeof invokeLLM>>> {
   const providers = synthesisProviders();
   if (!providers.length) {
-    throw new Error("Synthesis model is not configured: set FREELLMAPI_BASE_URL + FREELLMAPI_API_KEY, HF_API_KEY, GEMINI_API_KEY, or XAI_API_KEY (Groq). No answer was generated.");
+    throw new Error("Synthesis model is not configured: set NVIDIA_API_KEY, FREELLMAPI_BASE_URL + FREELLMAPI_API_KEY, HF_API_KEY, GEMINI_API_KEY, or XAI_API_KEY (Groq). No answer was generated.");
   }
   const failures: string[] = [];
   for (const provider of providers) {
@@ -890,7 +913,7 @@ export async function conductResearch(question: string, onProgress: (p: Research
       imageAnalysisText = blocks.join("\n\n");
       onProgress({ stage: "verifying", detail: `Vision model analyzed ${imageUrls.length} attached image${imageUrls.length > 1 ? "s" : ""}`, at: Date.now() });
     } else {
-      imageAnalysisNote = "No vision model is configured on this deployment, so the attached image(s) could not be analyzed. Set GEMINI_API_KEY, HF_API_KEY, GROQ_API_KEY, or VISION_API_URL to enable image understanding in chat.";
+      imageAnalysisNote = "No vision model is configured on this deployment, so the attached image(s) could not be analyzed. Set NVIDIA_API_KEY, GEMINI_API_KEY, HF_API_KEY, GROQ_API_KEY, or VISION_API_URL to enable image understanding in chat.";
     }
   }
   const fromKnowledgeOnly = !evidence.length && !userAttachments?.contextText;
@@ -925,7 +948,7 @@ export async function conductResearch(question: string, onProgress: (p: Research
   let answer: string;
   if (!synthesisModelConfigured()) {
     if (!evidence.length && !userAttachments?.contextText && !imageAnalysisText) {
-      throw new Error("No synthesis model is configured and no readable sources were retrieved, so no answer can be produced. Set FREELLMAPI_BASE_URL + FREELLMAPI_API_KEY, HF_API_KEY, GEMINI_API_KEY, or XAI_API_KEY (Groq).");
+      throw new Error("No synthesis model is configured and no readable sources were retrieved, so no answer can be produced. Set NVIDIA_API_KEY, FREELLMAPI_BASE_URL + FREELLMAPI_API_KEY, HF_API_KEY, GEMINI_API_KEY, or XAI_API_KEY (Groq).");
     }
     onProgress({ stage: "synthesizing", detail: "No synthesis model configured — composing an extractive digest from the top verified passages and any attached documents/images (no model knowledge)", at: Date.now() });
     answer = extractiveFallbackAnswer(question, evidence, conflicts, mode, { contextText: userAttachments?.contextText, docChunks, imageAnalysisText, imageAnalysisNote });

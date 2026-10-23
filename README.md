@@ -43,7 +43,19 @@ See [`STARTUP.md`](STARTUP.md) for the full architecture map and the phased road
 
 The default web adapter is keyless DuckDuckGo search (no API card needed) with the public Wikipedia API as automatic fallback; the default academic adapter is Semantic Scholar. After the first fetch round, the research agent also browses hop 2: it follows the most relevant links on the top fetched pages (bounded to 2 pages x 4 links) and reads them as extra sources. For even stronger coverage, configure Brave or Tavily using project secrets; if a selected paid provider is not configured, the session fails explicitly rather than falling back to fabricated data.
 
-**No-key extractive mode**: when no synthesis model is configured at all (`FREELLMAPI_BASE_URL`+`FREELLMAPI_API_KEY`, `HF_API_KEY`, `GEMINI_API_KEY`, `XAI_API_KEY` all absent), research still completes — the answer is an extractive digest composed entirely of the top-ranked verified passages, each cited `[n]`, with a clear "Extractive answer" banner and a limitations note. No model knowledge is used, so nothing is unlabeled.
+**No-key extractive mode**: when no synthesis model is configured at all (`NVIDIA_API_KEY`, `FREELLMAPI_BASE_URL`+`FREELLMAPI_API_KEY`, `HF_API_KEY`, `GEMINI_API_KEY`, `XAI_API_KEY` all absent), research still completes — the answer is an extractive digest composed entirely of the top-ranked verified passages, each cited `[n]`, with a clear "Extractive answer" banner and a limitations note. No model knowledge is used, so nothing is unlabeled.
+
+## NVIDIA NIM integration (Nemotron 3 Ultra synthesis backend)
+
+TruthSearch's synthesis chain now speaks to [NVIDIA NIM](https://build.nvidia.com) — NVIDIA's hosted inference API with a free OpenAI-compatible endpoint. When `NVIDIA_API_KEY` is set, the flagship **Nemotron 3 Ultra** (`nvidia/nemotron-3-ultra-550b-a55b`, 550B-A55B hybrid Mamba-Transformer MoE, 1M context) answers code/general synthesis, and the omni-modal **Nemotron 3 Nano Omni** (`nvidia/nemotron-3-nano-omni-30b-a3b-reasoning`) serves the vision chain.
+
+**Setup** — create a free account at [build.nvidia.com](https://build.nvidia.com), generate an API key (`nvapi-…`), then set on the TruthSearch deployment:
+
+- `NVIDIA_API_KEY` — the key from build.nvidia.com (activates the provider)
+- `NVIDIA_MODEL` (optional) — pin a different default model, e.g. `nvidia/nemotron-3.5-lightning-30b-a3b`. Per-kind overrides: `NVIDIA_MODEL_VISION`, `NVIDIA_MODEL_CODE`, `NVIDIA_MODEL_GENERAL`
+- `NVIDIA_BASE_URL` (optional) — defaults to `https://integrate.api.nvidia.com/v1`; point it at a self-hosted NIM microservice if you run your own GPUs
+
+When configured, NVIDIA is tried first in the synthesis chain (ahead of FreeLLMAPI, Hugging Face, Gemini, and Groq); the rest of the chain remains as fallback, so answers stay honest even when NVIDIA rate-limits.
 
 ## FreeLLMAPI integration (free self-hosted LLM backend)
 

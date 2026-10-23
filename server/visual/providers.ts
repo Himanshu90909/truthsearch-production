@@ -23,6 +23,14 @@ export function visionProviders(): VisionProvider[] {
   if (customUrl && customKey && customModel) {
     providers.push({ name: "custom", endpoint: customUrl.replace(/\/$/, ""), apiKey: customKey, model: customModel });
   }
+  // NVIDIA NIM (build.nvidia.com) — vision through the omni-modal Nemotron 3
+  // Nano Omni (images/video/text, accepts image_url input). NVIDIA_MODEL_VISION
+  // pins a different vision-capable model.
+  const nvidiaKey = env("NVIDIA_API_KEY");
+  if (nvidiaKey) {
+    const nvidiaBase = (env("NVIDIA_BASE_URL") || "https://integrate.api.nvidia.com/v1").replace(/\/+$/, "").replace(/\/v1$/, "");
+    providers.push({ name: "nvidia", endpoint: `${nvidiaBase}/v1/chat/completions`, apiKey: nvidiaKey, model: env("NVIDIA_MODEL_VISION") || "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning" });
+  }
   // FreeLLMAPI self-hosted aggregator/router (OpenAI-compatible, vision-capable
   // models routed via `auto`). Same env vars as the research synthesis chain.
   const freellmapiBase = env("FREELLMAPI_BASE_URL");
@@ -105,7 +113,7 @@ const extractContent = (payload: any): string => {
 // Non-streaming JSON-style call with provider fallback.
 export async function invokeVision(options: VisionInvokeOptions): Promise<VisionResult> {
   const providers = visionProviders();
-  if (!providers.length) throw new Error("No vision model is configured. Set FREELLMAPI_BASE_URL + FREELLMAPI_API_KEY, GEMINI_API_KEY, HF_API_KEY, GROQ_API_KEY, or VISION_API_URL + VISION_API_KEY + VISION_MODEL.");
+  if (!providers.length) throw new Error("No vision model is configured. Set NVIDIA_API_KEY, FREELLMAPI_BASE_URL + FREELLMAPI_API_KEY, GEMINI_API_KEY, HF_API_KEY, GROQ_API_KEY, or VISION_API_URL + VISION_API_KEY + VISION_MODEL.");
   let lastError: Error | null = null;
   for (const provider of providers) {
     const startedAt = Date.now();
@@ -139,7 +147,7 @@ export async function invokeVision(options: VisionInvokeOptions): Promise<Vision
 // Yields text deltas as they arrive.
 export async function* invokeVisionStream(options: VisionInvokeOptions): AsyncGenerator<{ delta: string; provider: string; model: string }, void, void> {
   const providers = visionProviders();
-  if (!providers.length) throw new Error("No vision model is configured. Set FREELLMAPI_BASE_URL + FREELLMAPI_API_KEY, GEMINI_API_KEY, HF_API_KEY, GROQ_API_KEY, or VISION_API_URL + VISION_API_KEY + VISION_MODEL.");
+  if (!providers.length) throw new Error("No vision model is configured. Set NVIDIA_API_KEY, FREELLMAPI_BASE_URL + FREELLMAPI_API_KEY, GEMINI_API_KEY, HF_API_KEY, GROQ_API_KEY, or VISION_API_URL + VISION_API_KEY + VISION_MODEL.");
   let lastError: Error | null = null;
   for (const provider of providers) {
     let response: Response;
