@@ -54,6 +54,7 @@ TruthSearch's synthesis chain now speaks to [NVIDIA NIM](https://build.nvidia.co
 - `NVIDIA_API_KEY` — the key from build.nvidia.com (activates the provider)
 - `NVIDIA_MODEL` (optional) — pin a different default model, e.g. `nvidia/nemotron-3.5-lightning-30b-a3b`. Per-kind overrides: `NVIDIA_MODEL_VISION`, `NVIDIA_MODEL_CODE`, `NVIDIA_MODEL_GENERAL`
 - `NVIDIA_BASE_URL` (optional) — defaults to `https://integrate.api.nvidia.com/v1`; point it at a self-hosted NIM microservice if you run your own GPUs
+- `NVIDIA_THINKING` (optional) — Nemotron models reason before answering; thinking is **off by default** because hidden reasoning makes a deep-research answer 5-8x slower and overruns serverless limits (e.g. Vercel Hobby's 60s function cap). Set `NVIDIA_THINKING=true` when you run a standalone server (or Vercel Pro with a higher `maxDuration`) and want maximum answer depth.
 
 When configured, NVIDIA is tried first in the synthesis chain (ahead of FreeLLMAPI, Hugging Face, Gemini, and Groq); the rest of the chain remains as fallback, so answers stay honest even when NVIDIA rate-limits.
 

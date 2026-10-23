@@ -290,6 +290,9 @@ type ProviderConfig = {
   endpoint: string;
   apiKey: string;
   models: Record<"vision" | "code" | "general", string[]>;
+  // Extra request-body fields merged into the OpenAI-compatible payload
+  // (e.g. NIM's chat_template_kwargs). Ignored by providers that don't set it.
+  extraBody?: Record<string, unknown>;
 };
 
 export function synthesisProviders(): ProviderConfig[] {
@@ -314,6 +317,11 @@ export function synthesisProviders(): ProviderConfig[] {
         code: [env("NVIDIA_MODEL_CODE") || nvidiaDefaultModel],
         general: [env("NVIDIA_MODEL_GENERAL") || nvidiaDefaultModel],
       },
+      // Nemotron is a reasoning model: hidden thinking makes answers great but
+      // 5-8x slower, which blows past serverless time limits (60s on Vercel
+      // Hobby). Default to direct answers; set NVIDIA_THINKING=true for
+      // deep-reasoning deployments (standalone server / Pro functions).
+      extraBody: { chat_template_kwargs: { thinking: env("NVIDIA_THINKING") === "true" } },
     });
   }
   // 1. FreeLLMAPI (github.com/tashfeenahmed/freellmapi) — a self-hosted
@@ -500,6 +508,7 @@ export async function callSynthesisLLM(params: Parameters<typeof invokeLLM>[0], 
               messages: params.messages,
               temperature: 0.3,
               max_tokens: 4096,
+              ...(provider.extraBody || {}),
             }),
             signal: AbortSignal.timeout(Math.max(timeoutMs, 120000)),
           });
