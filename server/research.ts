@@ -297,6 +297,42 @@ type ProviderConfig = {
 
 export function synthesisProviders(): ProviderConfig[] {
   const providers: ProviderConfig[] = [];
+  // -2. Meta Model API (api.meta.ai) — Meta's own inference API,
+  // OpenAI-compatible, pay-as-you-go. Muse Spark 1.3 is agentic/coding-tuned
+  // with a 1M-token context ($1.25/M input, $4.25/M output in Standard mode).
+  // META_MODEL pins a specific model. Text-only here; images use Gemini.
+  const metaKey = env("MODEL_API_KEY") || env("META_API_KEY");
+  if (metaKey) {
+    const metaDefault = env("META_MODEL") || "muse-spark-1.3";
+    providers.push({
+      name: "meta",
+      endpoint: "https://api.meta.ai/v1/chat/completions",
+      apiKey: metaKey,
+      models: {
+        vision: [metaDefault],
+        code: [metaDefault, "muse-spark-1.2"],
+        general: [metaDefault, "muse-spark-1.2", "muse-wonder-1.0"],
+      },
+    });
+  }
+  // -1. LLM7.io (api.llm7.io) — free-tier aggregator with an OpenAI-compatible
+  // API. Free tokens are limited to the turbo tier (pro-tier models return a
+  // misleading 401 "invalid key"), so the chain pins turbo models: gpt-oss:20b
+  // (reasoning) with nemotron-3-nano:30b as failover. LLM7_MODEL pins a
+  // specific turbo model. Free quota: 100k tokens per 24h, 1 request/second.
+  const llm7Key = env("LLM7_API_KEY");
+  if (llm7Key) {
+    providers.push({
+      name: "llm7",
+      endpoint: "https://api.llm7.io/v1/chat/completions",
+      apiKey: llm7Key,
+      models: {
+        vision: [env("LLM7_MODEL") || "gpt-oss:20b"],
+        code: [env("LLM7_MODEL") || "gpt-oss:20b", "nemotron-3-nano:30b"],
+        general: [env("LLM7_MODEL") || "gpt-oss:20b", "nemotron-3-nano:30b"],
+      },
+    });
+  }
   // 0. NVIDIA NIM (build.nvidia.com) — NVIDIA's hosted inference API with a
   // generous free endpoint, fully OpenAI-compatible. Defaults to the flagship
   // Nemotron 3 Ultra (hybrid Mamba-Transformer MoE, 550B-A55B, 1M context) —
