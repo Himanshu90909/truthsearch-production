@@ -31,6 +31,7 @@ function diagnostics(req: Request, res: Response): boolean {
       geminiKey: Boolean(process.env.GEMINI_API_KEY),
       groqKey: Boolean(process.env.XAI_API_KEY || process.env.GROQ_API_KEY),
       nvidiaKey: Boolean(process.env.NVIDIA_API_KEY),
+      gnaniKey: Boolean(process.env.GNANI_API_KEY),
       freellmapiKey: Boolean(process.env.FREELLMAPI_BASE_URL && process.env.FREELLMAPI_API_KEY),
       sync: process.env.SYNC_RESEARCH === "true" || process.env.VERCEL === "1",
     });

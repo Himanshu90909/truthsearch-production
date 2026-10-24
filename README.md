@@ -56,6 +56,20 @@ TruthSearch's synthesis chain now speaks to [NVIDIA NIM](https://build.nvidia.co
 - `NVIDIA_BASE_URL` (optional) — defaults to `https://integrate.api.nvidia.com/v1`; point it at a self-hosted NIM microservice if you run your own GPUs
 - `NVIDIA_THINKING` (optional) — Nemotron models reason before answering; thinking is **off by default** because hidden reasoning makes a deep-research answer 5-8x slower and overruns serverless limits (e.g. Vercel Hobby's 60s function cap). Set `NVIDIA_THINKING=true` when you run a standalone server (or Vercel Pro with a higher `maxDuration`) and want maximum answer depth.
 
+## Voice questions & spoken answers (Gnani AI)
+
+TruthSearch speaks Indian languages. With `GNANI_API_KEY` set (create one in the [Gnani API dashboard](https://app.gnani.ai)), two buttons appear:
+
+- **Mic button** in the hero composer — record a question in Hindi, English or code-mixed Hinglish; Gnani **Prisma v2.5** transcribes it (trained on 14M+ hours of telephonic audio, `indic-auto` detects the language; audio is converted client-side to 16 kHz mono WAV) and the text lands in the question box.
+- **Listen button** on every answer — Gnani **Timbre v2.5** reads the evidence-backed conclusion aloud (mp3, `language=auto` detects script; markdown is stripped so it reads prose, not syntax).
+
+Environment variables:
+
+- `GNANI_API_KEY` — the key from the Gnani dashboard (activates the voice layer)
+- `GNANI_BASE_URL` (optional) — defaults to `https://api.vachana.ai`
+
+Without a key the buttons simply stay hidden; everything else works unchanged. Voice calls are proxied server-side so the key never reaches the browser.
+
 When configured, NVIDIA is tried first in the synthesis chain (ahead of FreeLLMAPI, Hugging Face, Gemini, and Groq); the rest of the chain remains as fallback, so answers stay honest even when NVIDIA rate-limits.
 
 ## FreeLLMAPI integration (free self-hosted LLM backend)

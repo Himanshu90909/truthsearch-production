@@ -10,6 +10,7 @@ import { LOCAL_SESSION_COOKIE, SESSION_TTL_MS, hashPassword, normalizeEmail, val
 import { storagePut } from "./storage";
 import { buildModeQueries, classifyIntent, conductResearch, makeQueries, RESEARCH_MODES } from "./research";
 import { providerRegistry, providerStatuses, providersForIntent } from "./providers/registry";
+import { gnaniConfigured, gnaniSpeak, gnaniTranscribe, STT_LANGUAGES, TTS_LANGUAGES } from "./gnani";
 
 const questionInput = z.object({ question: z.string().trim().min(8).max(1200) });
 
@@ -115,6 +116,14 @@ export const appRouter = router({
     create: publicProcedure.input(z.object({ name: z.string().trim().min(1).max(120) })).mutation(async ({ input, ctx }) => { if (!ctx.user) throw new Error("Sign in to use collections."); const id = await createCollection(ctx.user.id, input.name); void recordEvent("collection.created", ctx.user.id, null); return { id }; }),
     remove: publicProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => { if (!ctx.user) throw new Error("Sign in to use collections."); await deleteCollection(ctx.user.id, input.id); return { success: true } as const; }),
     assign: publicProcedure.input(z.object({ sessionId: z.number().int().positive(), collectionId: z.number().int().positive().nullable() })).mutation(async ({ input, ctx }) => { if (!ctx.user) throw new Error("Sign in to use collections."); await setSessionCollection(input.sessionId, ctx.user.id, input.collectionId); return { success: true } as const; }),
+  }),
+  gnani: router({
+    // Voice layer backed by Gnani AI (api.vachana.ai):
+    //  - transcribe: speak your research question (Prisma v2.5 STT)
+    //  - speak: hear the answer read aloud (Timbre v2.5 TTS)
+    available: publicProcedure.query(() => ({ configured: gnaniConfigured() })),
+    transcribe: publicProcedure.input(z.object({ audioBase64: z.string().min(10).max(15_000_000), mimeType: z.string().trim().min(3).max(60).default("audio/wav"), languageCode: z.enum(STT_LANGUAGES).default("indic-auto") })).mutation(async ({ input }) => { if (!gnaniConfigured()) throw new Error("Voice input is not configured on this deployment: set GNANI_API_KEY."); try { return await gnaniTranscribe({ audioBase64: input.audioBase64, mimeType: input.mimeType, languageCode: input.languageCode }); } catch (error) { throw new Error(error instanceof Error ? error.message : "Transcription failed."); } }),
+    speak: publicProcedure.input(z.object({ text: z.string().trim().min(1).max(6000), language: z.enum(TTS_LANGUAGES).default("auto"), voice: z.string().trim().min(1).max(60).optional() })).mutation(async ({ input }) => { if (!gnaniConfigured()) throw new Error("Spoken answers are not configured on this deployment: set GNANI_API_KEY."); try { return await gnaniSpeak({ text: input.text, language: input.language, voice: input.voice }); } catch (error) { throw new Error(error instanceof Error ? error.message : "Speech synthesis failed."); } }),
   }),
   admin: router({
     metrics: publicProcedure.input(z.object({ token: z.string().max(200).optional(), days: z.number().int().min(1).max(90).optional() }).optional()).query(async ({ input, ctx }) => {

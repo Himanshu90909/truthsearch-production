@@ -15,13 +15,17 @@ import {
   GitBranch,
   Loader2,
   Menu,
+  Mic,
   Moon,
   Paperclip,
   Plus,
   Search,
   ShieldCheck,
   Sparkles,
+  Square,
   Sun,
+  Volume2,
+  VolumeX,
   X,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
@@ -122,6 +126,13 @@ export default function Home() {
   const [previewAttachment, setPreviewAttachment] = useState<Attachment | null>(null);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [attachmentsProcessing, setAttachmentsProcessing] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [voiceLang, setVoiceLang] = useState("indic-auto");
+  const [voiceError, setVoiceError] = useState("");
+  const [playing, setPlaying] = useState(false);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
@@ -133,6 +144,10 @@ export default function Home() {
   const session = trpc.research.get.useQuery({ id: sessionId || 0 }, { enabled: Boolean(sessionId), refetchInterval: (query) => query.state.data?.session.status === "completed" || query.state.data?.session.status === "failed" ? false : 1200 });
   const plan = trpc.research.plan.useQuery({ question: question || "Research a question with live sources", mode }, { enabled: question.length >= 8 });
   const providerStatus = trpc.research.providers.useQuery();
+  const gnaniStatus = trpc.gnani.available.useQuery();
+  const voiceEnabled = gnaniStatus.data?.configured === true;
+  const transcribeMutation = trpc.gnani.transcribe.useMutation();
+  const speakMutation = trpc.gnani.speak.useMutation();
   const [authModal, setAuthModal] = useState(false);
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [authEmail, setAuthEmail] = useState("");
@@ -158,6 +173,96 @@ export default function Home() {
   const claimStatuses = ((data?.session?.plan?.claimStatuses as ClaimStatus[] | undefined) || evidence.map(() => "verified" as ClaimStatus));
   const latestProgress = data?.messages?.filter((m: any) => m.role === "system").at(-1)?.content || "Ready for a question";
   const activeStage = Math.max(0, stages.findIndex((s) => latestProgress.toLowerCase().includes(s)));
+
+  // Stop any playing answer audio when the session changes or the page unmounts.
+  useEffect(() => {
+    audioRef.current?.pause();
+    setPlaying(false);
+    return () => { audioRef.current?.pause(); };
+  }, [sessionId]);
+
+  // Encode any recorded blob (webm/ogg/mp4 from MediaRecorder) into a 16 kHz
+  // mono 16-bit WAV, the format Gnani Prisma STT handles best.
+  async function blobToWavBase64(blob: Blob): Promise<string> {
+    const arrayBuffer = await blob.arrayBuffer();
+    const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    const ctx = new AC();
+    const decoded = await ctx.decodeAudioData(arrayBuffer.slice(0));
+    void ctx.close();
+    const targetRate = 16000;
+    const length = Math.max(1, Math.ceil(decoded.duration * targetRate));
+    const offline = new OfflineAudioContext(1, length, targetRate);
+    const src = offline.createBufferSource();
+    src.buffer = decoded;
+    src.connect(offline.destination);
+    src.start(0);
+    const rendered = await offline.startRendering();
+    const pcm = rendered.getChannelData(0);
+    const bytes = new ArrayBuffer(44 + pcm.length * 2);
+    const view = new DataView(bytes);
+    const w = (off: number, str: string) => { for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i)); };
+    w(0, "RIFF"); view.setUint32(4, 36 + pcm.length * 2, true); w(8, "WAVE"); w(12, "fmt ");
+    view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+    view.setUint32(24, targetRate, true); view.setUint32(28, targetRate * 2, true);
+    view.setUint16(32, 2, true); view.setUint16(34, 16, true); w(36, "data");
+    view.setUint32(40, pcm.length * 2, true);
+    let off = 44;
+    for (let i = 0; i < pcm.length; i++, off += 2) {
+      const sample = Math.max(-1, Math.min(1, pcm[i]));
+      view.setInt16(off, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+    }
+    const u8 = new Uint8Array(bytes);
+    let binary = "";
+    for (let i = 0; i < u8.length; i += 0x8000) {
+      binary += String.fromCharCode.apply(null, Array.from(u8.subarray(i, i + 0x8000)));
+    }
+    return btoa(binary);
+  }
+
+  async function toggleRecording() {
+    if (recording) { recorderRef.current?.stop(); return; }
+    setVoiceError("");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const rec = new MediaRecorder(stream);
+      chunksRef.current = [];
+      rec.ondataavailable = (e) => { if (e.data.size) chunksRef.current.push(e.data); };
+      rec.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        setRecording(false);
+        const blob = new Blob(chunksRef.current, { type: rec.mimeType || "audio/webm" });
+        if (blob.size < 1000) { setVoiceError("Recording too short — hold the mic a bit longer."); return; }
+        try {
+          const base64 = await blobToWavBase64(blob);
+          const result = await transcribeMutation.mutateAsync({ audioBase64: base64, mimeType: "audio/wav", languageCode: voiceLang as "indic-auto" });
+          if (result.transcript) setQuestion((q) => (q ? `${q} ${result.transcript}`.slice(0, 1200) : result.transcript));
+        } catch (error) {
+          setVoiceError(error instanceof Error ? error.message : "Transcription failed.");
+        }
+      };
+      rec.start();
+      recorderRef.current = rec;
+      setRecording(true);
+    } catch {
+      setVoiceError("Microphone permission was denied.");
+    }
+  }
+
+  async function toggleListen() {
+    if (playing) { audioRef.current?.pause(); setPlaying(false); return; }
+    const answer = data?.session?.answer as string | undefined;
+    if (!answer) return;
+    try {
+      const audio = await speakMutation.mutateAsync({ text: answer, language: "auto" });
+      const element = new Audio(`data:${audio.mimeType};base64,${audio.audioBase64}`);
+      audioRef.current = element;
+      element.onended = () => setPlaying(false);
+      await element.play();
+      setPlaying(true);
+    } catch (error) {
+      setVoiceError(error instanceof Error ? error.message : "Could not synthesize speech.");
+    }
+  }
   const visibleHistory = (history.data || []).filter((item) => selectedCollection === null || item.collectionId === selectedCollection);
   const confidence = Math.round(evidence.length ? evidence.slice(0, 6).reduce((sum, item) => sum + (item.supportScore || item.qualityScore || 70), 0) / Math.min(evidence.length, 6) : 0);
 
@@ -272,7 +377,7 @@ export default function Home() {
     <main className="chat-main">
       {!sessionId ? <div className="chat-landing" id="research">
         <div className="chat-hero"><div className="eyebrow">Evidence before certainty</div><h1>Research anything.<br /><em>Verify everything.</em></h1><p>Search live sources, save every prompt, and verify what the sources actually say. Every prompt and answer is stored in your sidebar.</p></div>
-      <section className="hero"><div className="eyebrow">Evidence before certainty</div><h1>Research anything.<br /><em>Verify everything.</em></h1><p>Search the web, compare evidence, and understand what the sources actually say.</p><form className={`search-shell composer ${attachmentMenuOpen ? "menu-open" : ""}`} onSubmit={submit} onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add("drag-over"); }} onDragLeave={(e) => e.currentTarget.classList.remove("drag-over")} onDrop={(e) => { e.preventDefault(); e.currentTarget.classList.remove("drag-over"); addFiles(e.dataTransfer.files); }}><input ref={fileInputRef} hidden type="file" multiple accept=".pdf,.doc,.docx,.txt,.csv,.xlsx" onChange={(e) => addFiles(e.target.files)} /><input ref={photoInputRef} hidden type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={(e) => addFiles(e.target.files, "photo")} /><input ref={cameraInputRef} hidden type="file" accept="image/*" capture="environment" onChange={(e) => addFiles(e.target.files, "photo")} />{attachments.length > 0 && <div className="attachment-list">{attachments.slice(0, 4).map((item) => <div className="attachment-chip" key={item.id}>{item.preview ? <button type="button" onClick={() => setPreviewAttachment(item)} aria-label={`Preview ${item.file.name}`}><img src={item.preview} alt="" /></button> : <FileUp size={16} />}<span title={item.file.name}>{item.file.name}</span><small>{formatBytes(item.file.size)}</small><button type="button" onClick={() => removeAttachment(item.id)} aria-label={`Remove attachment ${item.file.name}`}><X size={14} /></button></div>)}{attachments.length > 4 && <span className="more-attachments">+{attachments.length - 4} more</span>}</div>}<div className="composer-row"><div className="attach-wrap"><button type="button" className="attach-button" onClick={() => setAttachmentMenuOpen(!attachmentMenuOpen)} aria-label="Add attachment" aria-expanded={attachmentMenuOpen}><Plus size={19} /></button>{attachmentMenuOpen && <div className="attachment-menu" role="menu"><button type="button" onClick={() => fileInputRef.current?.click()}><FileUp size={16} /> Add document</button><button type="button" onClick={() => photoInputRef.current?.click()}><Paperclip size={16} /> Select photo</button><button type="button" onClick={() => { setAttachmentMenuOpen(false); setCameraOpen(true); }}><CameraIcon /> Take photo</button><span>Files stay in this composer until research starts.</span></div>}</div><textarea id="research-input" value={question} onChange={(e) => setQuestion(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }} placeholder={attachments.length ? "Ask anything about these files..." : "Ask anything..."} aria-label="Research question" rows={1} />{question && <button type="button" className="clear-search" onClick={() => setQuestion("")} aria-label="Clear research question"><X size={15} /></button>}<button type="submit" disabled={start.isPending || attachmentsProcessing || question.trim().length < 8}>{start.isPending || attachmentsProcessing ? <Loader2 className="spin" size={17} /> : <ArrowUpRight size={18} />}<span>Research</span></button></div><div className="mode-chips" role="radiogroup" aria-label="Research mode">{modes.map((m) => <button type="button" key={m.id} className={m.id === mode ? "mode-chip active" : "mode-chip"} onClick={() => setMode(m.id)} role="radio" aria-checked={m.id === mode} title={m.hint}>{m.label}</button>)}</div>{attachmentsProcessing && <div className="attachment-processing" role="status"><Loader2 className="spin" size={14} />Processing attachments — running in-browser OCR and extracting document text…</div>}{attachmentError && <div className="attachment-error" role="alert"><CircleAlert size={14} />{attachmentError}</div>}</form>{start.error && <div className="error-message"><CircleAlert size={15} />{start.error.message}</div>}<div className="suggestions"><span>Try asking</span>{examples.map((x) => <button key={x} onClick={() => setQuestion(x)} type="button">{x}</button>)}</div></section>
+      <section className="hero"><div className="eyebrow">Evidence before certainty</div><h1>Research anything.<br /><em>Verify everything.</em></h1><p>Search the web, compare evidence, and understand what the sources actually say.</p><form className={`search-shell composer ${attachmentMenuOpen ? "menu-open" : ""}`} onSubmit={submit} onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add("drag-over"); }} onDragLeave={(e) => e.currentTarget.classList.remove("drag-over")} onDrop={(e) => { e.preventDefault(); e.currentTarget.classList.remove("drag-over"); addFiles(e.dataTransfer.files); }}><input ref={fileInputRef} hidden type="file" multiple accept=".pdf,.doc,.docx,.txt,.csv,.xlsx" onChange={(e) => addFiles(e.target.files)} /><input ref={photoInputRef} hidden type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={(e) => addFiles(e.target.files, "photo")} /><input ref={cameraInputRef} hidden type="file" accept="image/*" capture="environment" onChange={(e) => addFiles(e.target.files, "photo")} />{attachments.length > 0 && <div className="attachment-list">{attachments.slice(0, 4).map((item) => <div className="attachment-chip" key={item.id}>{item.preview ? <button type="button" onClick={() => setPreviewAttachment(item)} aria-label={`Preview ${item.file.name}`}><img src={item.preview} alt="" /></button> : <FileUp size={16} />}<span title={item.file.name}>{item.file.name}</span><small>{formatBytes(item.file.size)}</small><button type="button" onClick={() => removeAttachment(item.id)} aria-label={`Remove attachment ${item.file.name}`}><X size={14} /></button></div>)}{attachments.length > 4 && <span className="more-attachments">+{attachments.length - 4} more</span>}</div>}<div className="composer-row"><div className="attach-wrap"><button type="button" className="attach-button" onClick={() => setAttachmentMenuOpen(!attachmentMenuOpen)} aria-label="Add attachment" aria-expanded={attachmentMenuOpen}><Plus size={19} /></button>{attachmentMenuOpen && <div className="attachment-menu" role="menu"><button type="button" onClick={() => fileInputRef.current?.click()}><FileUp size={16} /> Add document</button><button type="button" onClick={() => photoInputRef.current?.click()}><Paperclip size={16} /> Select photo</button><button type="button" onClick={() => { setAttachmentMenuOpen(false); setCameraOpen(true); }}><CameraIcon /> Take photo</button><span>Files stay in this composer until research starts.</span></div>}</div>{voiceEnabled && <div className="voice-wrap"><select className="voice-lang" value={voiceLang} onChange={(e) => setVoiceLang(e.target.value)} aria-label="Voice input language" title="Voice input language"><option value="indic-auto">Auto</option><option value="hi-IN">हिन्दी</option><option value="en-IN">English</option></select><button type="button" className={`mic-button ${recording ? "recording" : ""}`} onClick={toggleRecording} aria-label={recording ? "Stop recording" : "Ask by voice"} title="Ask by voice — Gnani Prisma speech-to-text">{recording ? <Square size={15} /> : <Mic size={18} />}</button></div>}<textarea id="research-input" value={question} onChange={(e) => setQuestion(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }} placeholder={attachments.length ? "Ask anything about these files..." : "Ask anything..."} aria-label="Research question" rows={1} />{question && <button type="button" className="clear-search" onClick={() => setQuestion("")} aria-label="Clear research question"><X size={15} /></button>}<button type="submit" disabled={start.isPending || attachmentsProcessing || question.trim().length < 8}>{start.isPending || attachmentsProcessing ? <Loader2 className="spin" size={17} /> : <ArrowUpRight size={18} />}<span>Research</span></button></div><div className="mode-chips" role="radiogroup" aria-label="Research mode">{modes.map((m) => <button type="button" key={m.id} className={m.id === mode ? "mode-chip active" : "mode-chip"} onClick={() => setMode(m.id)} role="radio" aria-checked={m.id === mode} title={m.hint}>{m.label}</button>)}</div>{attachmentsProcessing && <div className="attachment-processing" role="status"><Loader2 className="spin" size={14} />Processing attachments — running in-browser OCR and extracting document text…</div>}{attachmentError && <div className="attachment-error" role="alert"><CircleAlert size={14} />{attachmentError}</div>}{recording && <div className="recording-chip" role="status"><span className="rec-dot" />Listening — tap the square to stop</div>}{voiceError && <div className="attachment-error" role="alert"><CircleAlert size={14} />{voiceError}</div>}</form>{start.error && <div className="error-message"><CircleAlert size={15} />{start.error.message}</div>}<div className="suggestions"><span>Try asking</span>{examples.map((x) => <button key={x} onClick={() => setQuestion(x)} type="button">{x}</button>)}</div></section>
         {start.error && <div className="error-message"><CircleAlert size={15} />{start.error.message}</div>}
         <section className="pipeline" id="how-it-works">{[[BookOpen, "Question", "Define what needs to be known."], [Search, "Search", "Find relevant live sources."], [ShieldCheck, "Verify", "Check claims against passages."], [FlaskConical, "Synthesize", "Make uncertainty visible."]].map(([Icon, label, detail]) => { const I = Icon as typeof BookOpen; return <div className="pipeline-step" key={label as string}><div className="pipeline-icon"><I size={17} /></div><div><strong>{label as string}</strong><p>{detail as string}</p></div></div>; })}</section>
       </div> : <div className="chat-workspace">
@@ -286,7 +391,7 @@ export default function Home() {
         {data?.session?.plan?.answerProvenance === "technical_direct" && <div className="alert-card conflict-card"><FlaskConical size={19} /><div><strong>Technical answer with research.</strong><p>Answered from the model\u2019s expertise with retrieved evidence cited where it helps.</p></div></div>}
         {data?.session?.status === "failed" && <div className="alert-card error-card"><CircleAlert size={19} /><div><strong>Research couldn’t be completed.</strong><p>Some sources could not be retrieved. Your available evidence is still shown below.</p><button onClick={() => submit()}>Retry</button></div></div>}
         {data?.session?.answer && rankedSources.length > 0 && <div className="source-strip"><span className="eyebrow">Sources</span>{rankedSources.slice(0, 5).map((source) => <button key={source.id} onClick={() => setSelectedSource(source)}>{source.domain}</button>)}{sources.length > 5 && <span>+{sources.length - 5}</span>}</div>}
-        {data?.session?.answer && <article className="answer-panel document-answer"><div className="panel-heading"><div><div className="eyebrow">Answer</div><h2>Evidence-backed conclusion</h2></div><div className="confidence"><span>Overall confidence</span><strong>{confidence}%</strong><div className="confidence-bar"><i style={{ width: `${confidence}%` }} /></div></div></div><div className="answer-copy"><Streamdown>{data.session.answer}</Streamdown></div></article>}{data?.session?.answer && <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+        {data?.session?.answer && <article className="answer-panel document-answer"><div className="panel-heading"><div><div className="eyebrow">Answer</div><h2>Evidence-backed conclusion</h2></div><div className="confidence"><span>Overall confidence</span><strong>{confidence}%</strong><div className="confidence-bar"><i style={{ width: `${confidence}%` }} /></div></div>{voiceEnabled && <button type="button" className={`listen-button ${playing ? "playing" : ""}`} onClick={toggleListen} disabled={speakMutation.isPending} title="Listen to this answer — Gnani Timbre text-to-speech">{speakMutation.isPending ? <Loader2 className="spin" size={15} /> : playing ? <VolumeX size={16} /> : <Volume2 size={16} />}<span>{playing ? "Stop" : speakMutation.isPending ? "Loading…" : "Listen"}</span></button>}</div><div className="answer-copy"><Streamdown>{data.session.answer}</Streamdown></div></article>}{data?.session?.answer && <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
               <span className="eyebrow mr-1">Rate this answer — the app learns from it</span>
               <button type="button" disabled={!!feedback} onClick={() => { rlReward(rankedSources.map((s) => s.domain), 1); setFeedback("up"); }} className="inline-flex items-center gap-1.5 rounded-full border border-input bg-card px-4 py-1.5 hover:bg-accent disabled:opacity-50"><Check size={14} /> Helpful</button>
               <button type="button" disabled={!!feedback} onClick={() => { rlReward(rankedSources.map((s) => s.domain), -1); setFeedback("down"); }} className="inline-flex items-center gap-1.5 rounded-full border border-input bg-card px-4 py-1.5 hover:bg-accent disabled:opacity-50"><X size={14} /> Not helpful</button>
