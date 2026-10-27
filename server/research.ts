@@ -315,6 +315,25 @@ export function synthesisProviders(): ProviderConfig[] {
       },
     });
   }
+  // -1.5. Baseten Model APIs (inference.baseten.co) — Meta Global AI Developer
+  // Hackathon partner: $100 credits and 2M TPM rate limits. Hosts Meta's
+  // open-weights model (meta-models/muse-spark-open) plus fast general models.
+  // Workspace keys have the form "<id>.<secret>"; BASETEN_MODEL pins a model.
+  // muse-spark-open is a heavy reasoner, so it sits behind GLM-5.3-Fast which
+  // reliably completes within the shared 4096-token synthesis budget.
+  const basetenKey = env("BASETEN_API_KEY");
+  if (basetenKey) {
+    providers.push({
+      name: "baseten",
+      endpoint: "https://inference.baseten.co/v1/chat/completions",
+      apiKey: basetenKey,
+      models: {
+        vision: [env("BASETEN_MODEL") || "zai-org/GLM-5.3-Fast"],
+        code: [env("BASETEN_MODEL") || "zai-org/GLM-5.3-Fast", "openai/gpt-oss-120b"],
+        general: [env("BASETEN_MODEL") || "zai-org/GLM-5.3-Fast", "meta-models/muse-spark-open", "openai/gpt-oss-120b"],
+      },
+    });
+  }
   // -1. LLM7.io (api.llm7.io) — free-tier aggregator with an OpenAI-compatible
   // API. Free tokens are limited to the turbo tier (pro-tier models return a
   // misleading 401 "invalid key"), so the chain pins turbo models: gpt-oss:20b
