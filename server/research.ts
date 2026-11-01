@@ -293,6 +293,12 @@ type ProviderConfig = {
   // Extra request-body fields merged into the OpenAI-compatible payload
   // (e.g. NIM's chat_template_kwargs). Ignored by providers that don't set it.
   extraBody?: Record<string, unknown>;
+  // Output budget for this provider. Providers that are deliberately kept on
+  // the classic 4096-token budget leave this unset.
+  maxOutputTokens?: number;
+  // Ask the same model to continue when it stopped mid-answer (finish_reason
+  // "length" or an unbalanced code fence) instead of returning a half file.
+  continueOnTruncation?: boolean;
 };
 
 export function synthesisProviders(): ProviderConfig[] {
@@ -395,6 +401,10 @@ export function synthesisProviders(): ProviderConfig[] {
       endpoint: `${inceptionBase}/chat/completions`,
       apiKey: inceptionKey,
       models: { vision: [], code: [inceptionModel], general: [inceptionModel] },
+      // Mercury decodes whole blocks in parallel, so a long file arrives in
+      // seconds; give it room and let truncation be repaired by continuation.
+      maxOutputTokens: Math.max(1024, Number(env("INCEPTION_MAX_TOKENS") || 16384)),
+      continueOnTruncation: true,
     };
     providers.push(inception);
   }
@@ -566,6 +576,87 @@ export function extractiveFallbackAnswer(question: string, evidence: EvidenceRec
   return sections.filter(Boolean).join("\n\n");
 }
 
+// A single completion can stop at the model's output ceiling, and for long-form
+// answers (a whole HTML file, a long report) that means the caller receives half
+// a document — a code block that never closes. Providers that opt in get their
+// answer repaired by asking the SAME model to continue from the exact cut-off
+// point and stitching the parts together, so one answer comes back complete.
+const CONTINUATION_PROMPT = "Continue the same answer from the EXACT character where your previous output stopped. Do not repeat anything already written, do not add commentary or explanations, do not reopen a code fence. Output only the remaining text, until the answer is finished.";
+
+function looksTruncated(content: string, finishReason: string | null | undefined, kind: "vision" | "code" | "general"): boolean {
+  if (finishReason === "length") return true;
+  const fenceCount = (content.match(/```/g) || []).length;
+  if (fenceCount % 2 === 1) return true;
+  if (kind === "code" && /<!doctype html/i.test(content) && !/<\/html>/i.test(content)) return true;
+  return false;
+}
+
+async function continueTruncatedAnswer(args: {
+  provider: ProviderConfig;
+  model: string;
+  params: Parameters<typeof invokeLLM>[0];
+  kind: "vision" | "code" | "general";
+  data: Awaited<ReturnType<typeof invokeLLM>>;
+  content: string;
+}): Promise<Awaited<ReturnType<typeof invokeLLM>>> {
+  const { provider, model, params, kind, data, content } = args;
+  const rounds = Math.max(0, Math.min(4, Number(env("SYNTHESIS_CONTINUE_ROUNDS") || 2)));
+  const firstChoice = data.choices?.[0];
+  if (!provider.continueOnTruncation || rounds === 0 || !firstChoice) return data;
+  if (!looksTruncated(content, firstChoice.finish_reason, kind)) return data;
+
+  // Whole research run shares Vercel's 60s function budget, so continuation is
+  // time-boxed rather than unbounded.
+  const startedAt = Date.now();
+  const budgetMs = Math.max(5000, Number(env("SYNTHESIS_CONTINUE_BUDGET_MS") || 40000));
+  let merged = content;
+  let finishReason: string | null = firstChoice.finish_reason ?? null;
+  let roundsUsed = 0;
+
+  while (roundsUsed < rounds && Date.now() - startedAt < budgetMs) {
+    roundsUsed += 1;
+    try {
+      const res = await fetch(provider.endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${provider.apiKey}` },
+        body: JSON.stringify({
+          model,
+          messages: [
+            ...params.messages,
+            { role: "assistant", content: merged },
+            { role: "user", content: CONTINUATION_PROMPT },
+          ],
+          temperature: 0.3,
+          max_tokens: provider.maxOutputTokens ?? 4096,
+          ...(provider.extraBody || {}),
+        }),
+        signal: AbortSignal.timeout(Math.max(timeoutMs, 120000)),
+      });
+      if (!res.ok) break;
+      const part = (await res.json()) as Awaited<ReturnType<typeof invokeLLM>>;
+      const rawPart = part.choices?.[0]?.message?.content;
+      const chunk = typeof rawPart === "string" ? rawPart : "";
+      if (!chunk.trim()) break;
+      merged += chunk;
+      finishReason = part.choices?.[0]?.finish_reason ?? finishReason;
+      if (!looksTruncated(merged, finishReason, kind)) break;
+    } catch {
+      break; // Keep what we already have — a partial answer beats an error.
+    }
+  }
+
+  if (merged === content) return data;
+  return {
+    ...data,
+    choices: data.choices.map((choice, index) => index === 0
+      ? { ...choice, message: { ...choice.message, content: merged }, finish_reason: finishReason }
+      : choice),
+    usage: data.usage
+      ? { ...data.usage, completion_tokens: data.usage.completion_tokens + Math.max(0, Math.round((merged.length - content.length) / 4)), total_tokens: data.usage.total_tokens + Math.max(0, Math.round((merged.length - content.length) / 4)) }
+      : data.usage,
+  };
+}
+
 export async function callSynthesisLLM(params: Parameters<typeof invokeLLM>[0], kind: "vision" | "code" | "general" = "general"): Promise<Awaited<ReturnType<typeof invokeLLM>>> {
   const providers = synthesisProviders();
   if (!providers.length) {
@@ -590,7 +681,7 @@ export async function callSynthesisLLM(params: Parameters<typeof invokeLLM>[0], 
               model,
               messages: params.messages,
               temperature: 0.3,
-              max_tokens: 4096,
+              max_tokens: provider.maxOutputTokens ?? 4096,
               ...(provider.extraBody || {}),
             }),
             signal: AbortSignal.timeout(Math.max(timeoutMs, 120000)),
@@ -614,7 +705,7 @@ export async function callSynthesisLLM(params: Parameters<typeof invokeLLM>[0], 
             failures.push(`${provider.name}/${model} returned an empty answer (reasoning did not complete)`);
             break;
           }
-          return data;
+          return await continueTruncatedAnswer({ provider, model, params, kind, data, content });
         } catch (error) {
           const message = error instanceof Error ? error.message : "request failed";
           if (attempt < RETRY_DELAYS_MS.length) {
