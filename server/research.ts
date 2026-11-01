@@ -379,6 +379,25 @@ export function synthesisProviders(): ProviderConfig[] {
       extraBody: { chat_template_kwargs: { thinking: env("NVIDIA_THINKING") === "true" } },
     });
   }
+  // 0.5. Inception Labs Mercury (api.inceptionlabs.ai) — a diffusion LLM
+  // (dLLM) that decodes whole blocks in parallel, so it answers 5-10x faster
+  // than comparable chat models. That speed keeps synthesis inside Vercel's
+  // 60s function budget. Text-only: vision requests fall through to the
+  // providers below. INCEPTION_MODEL pins a model (mercury-3 by default),
+  // INCEPTION_PRIMARY=true promotes it ahead of NVIDIA when configured.
+  const inceptionKey = env("INCEPTION_API_KEY");
+  let inception: ProviderConfig | null = null;
+  if (inceptionKey) {
+    const inceptionBase = (env("INCEPTION_BASE_URL") || "https://api.inceptionlabs.ai/v1").replace(/\/+$/, "");
+    const inceptionModel = env("INCEPTION_MODEL") || "mercury-3";
+    inception = {
+      name: "inception",
+      endpoint: `${inceptionBase}/chat/completions`,
+      apiKey: inceptionKey,
+      models: { vision: [], code: [inceptionModel], general: [inceptionModel] },
+    };
+    providers.push(inception);
+  }
   // 1. FreeLLMAPI (github.com/tashfeenahmed/freellmapi) — a self-hosted
   // OpenAI-compatible aggregator behind a single /v1 endpoint: 34 free-tier
   // providers, one unified key, and a router that picks the best available
@@ -454,6 +473,15 @@ export function synthesisProviders(): ProviderConfig[] {
       apiKey: "anonymous",
       models: { vision: [], code: ["openai"], general: ["openai"] },
     });
+  }
+  // INCEPTION_PRIMARY=true makes Mercury the engine that answers first, with
+  // NVIDIA and the rest of the chain kept as fallbacks.
+  if (inception && env("INCEPTION_PRIMARY") === "true") {
+    const index = providers.indexOf(inception);
+    if (index > 0) {
+      providers.splice(index, 1);
+      providers.unshift(inception);
+    }
   }
   return providers;
 }
@@ -532,7 +560,7 @@ export function extractiveFallbackAnswer(question: string, evidence: EvidenceRec
     ? conflicts.map((c) => `- ${c.description || "Mixed statements were found across sources."}`).join("\n")
     : "The retrieved sources are consistent.");
   sections.push("## Limitations");
-  sections.push("This deployment has no synthesis model configured, so the answer cannot reason across sources — only quote them. Add `NVIDIA_API_KEY`, `FREELLMAPI_BASE_URL` + `FREELLMAPI_API_KEY`, `HF_API_KEY`, `GEMINI_API_KEY`, or `XAI_API_KEY` (Groq) to enable full analysis.");
+  sections.push("This deployment has no synthesis model configured, so the answer cannot reason across sources — only quote them. Add `NVIDIA_API_KEY`, `INCEPTION_API_KEY`, `FREELLMAPI_BASE_URL` + `FREELLMAPI_API_KEY`, `HF_API_KEY`, `GEMINI_API_KEY`, or `XAI_API_KEY` (Groq) to enable full analysis.");
   sections.push("## Conclusion");
   sections.push(top.length ? `The strongest retrieved evidence is quoted above; see citations [1]-[${Math.min(evidence.length, 8)}].` : "");
   return sections.filter(Boolean).join("\n\n");
@@ -541,7 +569,7 @@ export function extractiveFallbackAnswer(question: string, evidence: EvidenceRec
 export async function callSynthesisLLM(params: Parameters<typeof invokeLLM>[0], kind: "vision" | "code" | "general" = "general"): Promise<Awaited<ReturnType<typeof invokeLLM>>> {
   const providers = synthesisProviders();
   if (!providers.length) {
-    throw new Error("Synthesis model is not configured: set NVIDIA_API_KEY, FREELLMAPI_BASE_URL + FREELLMAPI_API_KEY, HF_API_KEY, GEMINI_API_KEY, or XAI_API_KEY (Groq). No answer was generated.");
+    throw new Error("Synthesis model is not configured: set NVIDIA_API_KEY, INCEPTION_API_KEY, FREELLMAPI_BASE_URL + FREELLMAPI_API_KEY, HF_API_KEY, GEMINI_API_KEY, or XAI_API_KEY (Groq). No answer was generated.");
   }
   const failures: string[] = [];
   for (const provider of providers) {
