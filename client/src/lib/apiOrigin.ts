@@ -16,3 +16,13 @@ export function getResearchApiUrl(hostname: string, configuredOrigin?: string) {
 function trimOrigin(origin: string) {
   return origin.trim().replace(/\/$/, "");
 }
+
+/**
+ * Base for plain (non-tRPC) API calls such as the playground routes.
+ * Empty string means "same origin", which is what Vercel and local dev use.
+ * Set VITE_API_ORIGIN when the frontend is hosted somewhere else, e.g. Firebase.
+ */
+export function getApiBase(configuredOrigin?: string) {
+  const configured = configuredOrigin?.trim();
+  return configured ? trimOrigin(configured) : "";
+}

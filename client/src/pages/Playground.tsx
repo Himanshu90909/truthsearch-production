@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
+import { getApiBase } from "@/lib/apiOrigin";
 import {
   ArrowLeft,
   ArrowUpRight,
@@ -192,6 +193,8 @@ function buildMessages(messages: Msg[]) {
   });
 }
 
+const API_BASE = getApiBase(import.meta.env.VITE_API_ORIGIN);
+
 export default function Playground() {
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [modelsError, setModelsError] = useState("");
@@ -235,7 +238,7 @@ export default function Playground() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch("/api/playground/models", { cache: "no-store" });
+        const res = await fetch(`${API_BASE}/api/playground/models`, { cache: "no-store" });
         const data = (await res.json()) as { models?: ModelInfo[]; error?: string };
         if (cancelled) return;
         if (!res.ok) throw new Error(data.error || `Model list failed (${res.status})`);
@@ -386,7 +389,7 @@ export default function Playground() {
     let reasoning = "";
 
     try {
-      const res = await fetch("/api/playground/chat", {
+      const res = await fetch(`${API_BASE}/api/playground/chat`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         signal: controller.signal,
