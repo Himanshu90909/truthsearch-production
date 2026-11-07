@@ -115,3 +115,5 @@ client/public/__manus__/version.json
 api/server.cjs
 dist/serverless.mjs
 eng.traineddata
+.vercel
+.env*

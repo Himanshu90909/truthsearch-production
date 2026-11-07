@@ -2,6 +2,7 @@ import express from "express";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
 import { registerStorageProxy } from "./storageProxy";
+import { registerPlaygroundRoutes } from "../playground";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { applyFrontendCors, createFrontendOriginAllowlist } from "./frontendCors";
@@ -43,6 +44,7 @@ export function createApp(): express.Express {
 
   registerStorageProxy(app);
   registerOAuthRoutes(app);
+  registerPlaygroundRoutes(app);
 
   // tRPC API
   app.use(
