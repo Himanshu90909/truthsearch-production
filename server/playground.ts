@@ -20,15 +20,18 @@ function withV1(base: string) {
   return /\/v1$/.test(trimmed) ? trimmed : `${trimmed}/v1`;
 }
 
-type ProviderId = "inception" | "nvidia" | "freellm" | "hf" | "astraflow" | "atlas";
+type ProviderId = "inception" | "nvidia" | "freellm" | "hf" | "astraflow" | "atlas" | "pollinations";
 
-const PROVIDERS: Record<ProviderId, { baseUrl: () => string; envKey: string; family: string }> = {
+const PROVIDERS: Record<ProviderId, { baseUrl: () => string; envKey?: string; family: string; chatPath?: string }> = {
   inception: { baseUrl: () => withV1(env("INCEPTION_BASE_URL") || "https://api.inceptionlabs.ai/v1"), envKey: "INCEPTION_API_KEY", family: "Inception Labs" },
   nvidia: { baseUrl: () => withV1(env("NVIDIA_BASE_URL") || "https://integrate.api.nvidia.com/v1"), envKey: "NVIDIA_API_KEY", family: "NVIDIA NIM" },
   freellm: { baseUrl: () => withV1(env("FREELLMAPI_BASE_URL") || "https://freellmapi.vercel.app"), envKey: "FREELLMAPI_API_KEY", family: "Free models" },
   // Hugging Face router: one OpenAI-compatible endpoint in front of every
   // serverless provider HF hosts. The catalogue is public, chat needs HF_API_KEY.
   hf: { baseUrl: () => withV1(env("HF_BASE_URL") || "https://router.huggingface.co/v1"), envKey: "HF_API_KEY", family: "Hugging Face" },
+  // Keyless free tier: Pollinations serves one anonymous reasoning model with no
+  // signup, which is what "free models" means without any credit card.
+  pollinations: { baseUrl: () => (env("POLLINATIONS_BASE_URL") || "https://text.pollinations.ai").replace(/\/+$/, ""), family: "Pollinations", chatPath: "/openai" },
   astraflow: { baseUrl: () => withV1(env("ASTRAFLOW_BASE_URL") || "https://api.umodelverse.ai/v1"), envKey: "ASTRAFLOW_API_KEY", family: "Astraflow" },
   atlas: { baseUrl: () => withV1(env("ATLAS_BASE_URL") || "https://api.atlascloud.ai/v1"), envKey: "ATLAS_API_KEY", family: "Atlas Cloud" },
 };
@@ -47,6 +50,7 @@ type PlaygroundModel = {
 // Curated catalogue: the models this NVIDIA/Inception account can actually
 // serve. Order matters — it is the picker order.
 const CATALOG: PlaygroundModel[] = [
+  { id: "openai-fast", provider: "pollinations", label: "GPT-OSS 20B", family: "Pollinations", note: "free, no key, reasoning", reasoning: true, vision: false, maxOutput: 4096 },
   { id: "mercury-3", provider: "inception", label: "Mercury 3", family: "Inception Labs", note: "diffusion LM, near-instant", reasoning: false, vision: false, maxOutput: 8192 },
   { id: "nvidia/nemotron-3.5-bolt-e4b", provider: "nvidia", label: "Nemotron 3.5 Bolt", family: "NVIDIA NIM", note: "tiny and fast, no thinking", reasoning: false, vision: false, maxOutput: 8192 },
   { id: "nvidia/nemotron-3.5-lightning-30b-a3b", provider: "nvidia", label: "Nemotron 3.5 Lightning", family: "NVIDIA NIM", note: "30B MoE, thinking", reasoning: true, vision: false, maxOutput: 8192 },
@@ -120,8 +124,9 @@ async function hfCanInfer(key: string, modelId: string): Promise<string | null> 
 }
 
 async function discoverProvider(provider: ProviderId): Promise<PlaygroundModel[]> {
-  const key = env(PROVIDERS[provider].envKey);
-  if (!key) return [];
+  const keyName = PROVIDERS[provider].envKey;
+  const key = keyName ? env(keyName) : "";
+  if (keyName && !key) return [];
   const cached = discoveryCache.get(provider);
   if (cached && Date.now() - cached.at < DISCOVERY_TTL_MS) return cached.models;
 
@@ -130,7 +135,7 @@ async function discoverProvider(provider: ProviderId): Promise<PlaygroundModel[]
   let models: PlaygroundModel[] = [];
   try {
     const res = await fetch(`${PROVIDERS[provider].baseUrl()}/models`, {
-      headers: { authorization: `Bearer ${key}`, accept: "application/json" },
+      headers: { ...(key ? { authorization: `Bearer ${key}` } : {}), accept: "application/json" },
       signal: controller.signal,
     });
     discoveryStatus[provider] = `http ${res.status}`;
@@ -166,7 +171,7 @@ async function discoverProvider(provider: ProviderId): Promise<PlaygroundModel[]
     clearTimeout(timer);
   }
   if (provider === "hf" && models.length) {
-    const problem = await hfCanInfer(key, models[0].id);
+    const problem = await hfCanInfer(key as string, models[0].id);
     if (problem) {
       discoveryStatus.hf = `catalogue ${models.length}, unusable: ${problem}`;
       models = [];
@@ -178,6 +183,11 @@ async function discoverProvider(provider: ProviderId): Promise<PlaygroundModel[]
 }
 
 /** Curated models first, then everything the configured gateways advertise. */
+function providerAvailable(provider: ProviderId) {
+  const keyName = PROVIDERS[provider].envKey;
+  return keyName ? Boolean(env(keyName)) : true;
+}
+
 export async function playgroundModels(): Promise<Array<PlaygroundModel & { available: boolean }>> {
   const discovered = (
     await Promise.all((Object.keys(PROVIDERS) as ProviderId[]).map(discoverProvider))
@@ -185,7 +195,7 @@ export async function playgroundModels(): Promise<Array<PlaygroundModel & { avai
 
   const curated = CATALOG.map((model) => ({
     ...model,
-    available: Boolean(env(PROVIDERS[model.provider].envKey)),
+    available: providerAvailable(model.provider),
   }));
   const known = new Set(curated.map((m) => m.id));
   const extra = discovered
@@ -195,7 +205,7 @@ export async function playgroundModels(): Promise<Array<PlaygroundModel & { avai
       // Providers with a curated list only surface models verified to answer.
       return allow ? allow.has(m.id) : true;
     })
-    .map((m) => ({ ...m, available: Boolean(env(PROVIDERS[m.provider].envKey)) }));
+    .map((m) => ({ ...m, available: providerAvailable(m.provider) }));
 
   return [...curated, ...extra];
 }
@@ -300,8 +310,8 @@ async function handleChat(req: Request, res: Response) {
   }
 
   const provider = PROVIDERS[model.provider];
-  const apiKey = env(provider.envKey);
-  if (!apiKey) {
+  const apiKey = provider.envKey ? env(provider.envKey) : "";
+  if (provider.envKey && !apiKey) {
     res.status(503).json({ error: `${model.family} is not configured on this deployment (${provider.envKey} missing).` });
     return;
   }
@@ -352,9 +362,9 @@ async function handleChat(req: Request, res: Response) {
 
   let upstream: Awaited<ReturnType<typeof fetch>>;
   try {
-    upstream = await fetch(`${provider.baseUrl()}/chat/completions`, {
+    upstream = await fetch(`${provider.baseUrl()}${provider.chatPath || "/chat/completions"}`, {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+      headers: { "content-type": "application/json", ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) },
       body: JSON.stringify(payload),
       signal: controller.signal,
     });

@@ -438,7 +438,8 @@ export default function Playground() {
           if (chunk.error) throw new Error(typeof chunk.error === "string" ? chunk.error : chunk.error.message || "The model returned an error.");
           const delta = chunk.choices?.[0]?.delta;
           if (delta?.content) answer += delta.content;
-          if (delta?.reasoning_content) reasoning += delta.reasoning_content;
+          const think = delta?.reasoning_content || delta?.reasoning;
+          if (think) reasoning += think;
           const now = Date.now();
           if (now - lastPaint > 60) {
             lastPaint = now;
