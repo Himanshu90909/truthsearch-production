@@ -39,6 +39,7 @@ type ModelInfo = {
   vision: boolean;
   provider: string;
   maxOutput: number;
+  image?: boolean;
   available: boolean;
 };
 
@@ -64,6 +65,7 @@ type Msg = {
   model?: string;
   seconds?: number;
   error?: string;
+  imageUrl?: string;
 };
 
 type Settings = { system: string; temperature: number; maxTokens: number };
@@ -368,6 +370,41 @@ export default function Playground() {
     if (!text && !attachments.length) return;
     if (!activeModel) {
       setNotice("No model is available right now.");
+      return;
+    }
+
+    if (activeModel.image) {
+      setMessages([...messages, { role: "user", content: text }]);
+      setInput("");
+      setAttachments([]);
+      setBusy(true);
+      const startedAt = Date.now();
+      try {
+        const res = await fetch(`${API_BASE}/api/playground/image`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ prompt: text, width: 1024, height: 1024 }),
+        });
+        const data = (await res.json()) as { url?: string; error?: string };
+        if (!res.ok || !data.url) throw new Error(data.error || `Image generation failed (${res.status}).`);
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: "",
+            imageUrl: data.url,
+            model: activeModel.label,
+            seconds: Math.max(1, Math.round((Date.now() - startedAt) / 1000)),
+          },
+        ]);
+      } catch (error) {
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: "", model: activeModel.label, error: (error as Error).message },
+        ]);
+      } finally {
+        setBusy(false);
+      }
       return;
     }
 
@@ -697,6 +734,16 @@ export default function Playground() {
                     <p className="pg-warn">
                       <CircleAlert size={14} /> {message.error}
                     </p>
+                  ) : message.imageUrl ? (
+                    <figure className="pg-image">
+                      <img src={message.imageUrl} alt={messages[index - 1]?.content || "Generated image"} loading="lazy" />
+                      <figcaption>
+                        <a href={message.imageUrl} target="_blank" rel="noopener noreferrer">
+                          Open full size <ArrowUpRight size={12} />
+                        </a>
+                        <span className="pg-meta-dim">free flux · no key</span>
+                      </figcaption>
+                    </figure>
                   ) : (
                     <div className="pg-prose">
                       <Streamdown>{message.content}</Streamdown>
@@ -778,21 +825,35 @@ export default function Playground() {
             onChange={grow}
             onKeyDown={onKeyDown}
             rows={1}
-            placeholder={activeModel?.vision ? "Message a model, or attach a photo or PDF…" : "Message a model…"}
+            placeholder={
+              activeModel?.image
+                ? "Describe the image you want — style, subject, lighting…"
+                : activeModel?.vision
+                  ? "Message a model, or attach a photo or PDF…"
+                  : "Message a model…"
+            }
             aria-label="Message"
           />
 
           <div className="pg-composer-row">
+            {!activeModel?.image && (
             <button type="button" className="pg-tool" onClick={() => photoInputRef.current?.click()} title="Attach photos">
               <ImagePlus size={15} /> <span>Photo</span>
             </button>
+            )}
+            {!activeModel?.image && (
             <button type="button" className="pg-tool" onClick={() => docInputRef.current?.click()} title="Attach a document">
               <FileText size={15} /> <span>Doc</span>
             </button>
+            )}
+            {!activeModel?.image && (
             <button type="button" className="pg-tool" onClick={() => setCameraOpen(true)} title="Take a photo">
               <CameraIcon size={15} /> <span>Camera</span>
             </button>
-            <span className="pg-composer-hint">{activeModel ? `${settings.temperature.toFixed(2)} temp · ${settings.maxTokens} tokens` : ""}</span>
+            )}
+            <span className="pg-composer-hint">
+              {activeModel?.image ? "free text-to-image · no key" : activeModel ? `${settings.temperature.toFixed(2)} temp · ${settings.maxTokens} tokens` : ""}
+            </span>
             {busy ? (
               <button type="button" className="pg-send stop" onClick={stop}>
                 <Square size={13} /> Stop

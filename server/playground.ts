@@ -45,11 +45,13 @@ type PlaygroundModel = {
   reasoning: boolean;
   vision: boolean;
   maxOutput: number;
+  image?: boolean;
 };
 
 // Curated catalogue: the models this NVIDIA/Inception account can actually
 // serve. Order matters — it is the picker order.
 const CATALOG: PlaygroundModel[] = [
+  { id: "pollinations-image", provider: "pollinations", label: "Flux (free image)", family: "Pollinations", note: "free text-to-image, no key", reasoning: false, vision: false, maxOutput: 0, image: true },
   { id: "openai-fast", provider: "pollinations", label: "GPT-OSS 20B", family: "Pollinations", note: "free, no key, reasoning", reasoning: true, vision: false, maxOutput: 4096 },
   { id: "mercury-3", provider: "inception", label: "Mercury 3", family: "Inception Labs", note: "diffusion LM, near-instant", reasoning: false, vision: false, maxOutput: 8192 },
   { id: "nvidia/nemotron-3.5-bolt-e4b", provider: "nvidia", label: "Nemotron 3.5 Bolt", family: "NVIDIA NIM", note: "tiny and fast, no thinking", reasoning: false, vision: false, maxOutput: 8192 },
@@ -274,6 +276,33 @@ function sanitizeMessages(raw: unknown): ChatMessage[] {
     .slice(-24);
 }
 
+// Text-to-image needs no key on Pollinations: the prompt goes in the path and
+// the image comes back as bytes. The client loads the returned URL directly.
+async function handleImage(req: Request, res: Response) {
+  const body = (req.body || {}) as { prompt?: unknown; width?: unknown; height?: unknown; seed?: unknown };
+  const prompt = String(body.prompt || "").trim().slice(0, 1200);
+  if (prompt.length < 3) {
+    res.status(400).json({ error: "Describe the image you want (at least a few words)." });
+    return;
+  }
+  const ip = String(req.headers["x-forwarded-for"] || "local").split(",")[0].trim();
+  if (!rateOk(`img:${ip}`)) {
+    res.status(429).json({ error: "Image limit reached for this hour. Try again shortly." });
+    return;
+  }
+  const size = (value: unknown, fallback: number) => {
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.min(1536, Math.max(256, Math.round(n / 64) * 64)) : fallback;
+  };
+  const width = size(body.width, 1024);
+  const height = size(body.height, 1024);
+  const seed = Number.isFinite(Number(body.seed)) ? Math.round(Number(body.seed)) : Math.floor(Math.random() * 1e6);
+  const base = (env("POLLINATIONS_IMAGE_BASE_URL") || "https://image.pollinations.ai").replace(/\/+$/, "");
+  const url = `${base}/prompt/${encodeURIComponent(prompt)}?width=${width}&height=${height}&seed=${seed}&nologo=true&model=flux`;
+
+  res.status(200).json({ url, prompt, width, height, seed, model: "flux" });
+}
+
 async function handleModels(req: Request, res: Response) {
   res.setHeader("Cache-Control", "no-store");
   const models = await playgroundModels();
@@ -445,4 +474,5 @@ async function handleChat(req: Request, res: Response) {
 export function registerPlaygroundRoutes(app: Express) {
   app.get("/api/playground/models", handleModels);
   app.post("/api/playground/chat", handleChat);
+  app.post("/api/playground/image", handleImage);
 }

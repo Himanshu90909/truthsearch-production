@@ -697,3 +697,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
 .app.dark .sidebar-link:hover { background: #262626; border-color: #3A3A3A; }
 .app.dark .sidebar-link svg { color: #20B8CD; }
 @media (max-width: 760px) { .sidebar-link-hint { display: none; } }
+
+/* generated image inside a playground answer */
+.pg-image { margin: 4px 0 0; display: grid; gap: 8px; }
+.pg-image img { width: 100%; max-width: 460px; border-radius: 12px; border: 1px solid var(--pg-line); display: block; }
+.pg-image figcaption { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--pg-muted); }
+.pg-image figcaption a { display: inline-flex; align-items: center; gap: 4px; color: var(--pg-accent); text-decoration: none; font-weight: 500; }
+.pg-image figcaption a:hover { text-decoration: underline; }
+@media (max-width: 760px) { .pg-image img { max-width: 100%; } }
