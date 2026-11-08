@@ -20,7 +20,7 @@ function withV1(base: string) {
   return /\/v1$/.test(trimmed) ? trimmed : `${trimmed}/v1`;
 }
 
-type ProviderId = "inception" | "nvidia" | "freellm" | "hf" | "astraflow" | "atlas" | "pollinations" | "openai" | "fal" | "google";
+type ProviderId = "inception" | "nvidia" | "freellm" | "hf" | "astraflow" | "atlas" | "pollinations" | "openai" | "fal" | "google" | "gemini";
 
 const PROVIDERS: Record<ProviderId, { baseUrl: () => string; envKey?: string; family: string; chatPath?: string }> = {
   inception: { baseUrl: () => withV1(env("INCEPTION_BASE_URL") || "https://api.inceptionlabs.ai/v1"), envKey: "INCEPTION_API_KEY", family: "Inception Labs" },
@@ -34,7 +34,10 @@ const PROVIDERS: Record<ProviderId, { baseUrl: () => string; envKey?: string; fa
   pollinations: { baseUrl: () => (env("POLLINATIONS_BASE_URL") || "https://text.pollinations.ai").replace(/\/+$/, ""), family: "Pollinations", chatPath: "/openai" },
   openai: { baseUrl: () => (env("OPENAI_BASE_URL") || "https://api.openai.com/v1").replace(/\/+$/, ""), envKey: "OPENAI_API_KEY", family: "OpenAI" },
   fal: { baseUrl: () => (env("FAL_BASE_URL") || "https://fal.run").replace(/\/+$/, ""), envKey: "FAL_KEY", family: "fal.ai" },
-  google: { baseUrl: () => (env("GEMINI_BASE_URL") || "https://generativelanguage.googleapis.com/v1beta").replace(/\/+$/, ""), envKey: "GEMINI_API_KEY", family: "Google" },
+  // Gemini's OpenAI-compatible surface: free-tier text works on an AI Studio key
+  // even when image generation on the same key is quota-blocked.
+  gemini: { baseUrl: () => `${(env("GEMINI_BASE_URL") || "https://generativelanguage.googleapis.com/v1beta").replace(/\/+$/, "")}/openai`, envKey: "GOOGLE_API_KEY", family: "Google" },
+  google: { baseUrl: () => (env("GEMINI_BASE_URL") || "https://generativelanguage.googleapis.com/v1beta").replace(/\/+$/, ""), envKey: "GOOGLE_API_KEY", family: "Google" },
   astraflow: { baseUrl: () => withV1(env("ASTRAFLOW_BASE_URL") || "https://api.umodelverse.ai/v1"), envKey: "ASTRAFLOW_API_KEY", family: "Astraflow" },
   atlas: { baseUrl: () => withV1(env("ATLAS_BASE_URL") || "https://api.atlascloud.ai/v1"), envKey: "ATLAS_API_KEY", family: "Atlas Cloud" },
 };
@@ -54,6 +57,8 @@ type PlaygroundModel = {
 // Curated catalogue: the models this NVIDIA/Inception account can actually
 // serve. Order matters — it is the picker order.
 const CATALOG: PlaygroundModel[] = [
+  { id: "gemini-3.1-flash-lite", provider: "gemini", label: "Gemini 3.1 Flash Lite", family: "Google", note: "free tier", reasoning: false, vision: false, maxOutput: 8192 },
+  { id: "gemini-2.5-flash", provider: "gemini", label: "Gemini 2.5 Flash", family: "Google", note: "free tier, vision", reasoning: false, vision: true, maxOutput: 8192 },
   { id: "gemini-2.5-flash-image", provider: "google", label: "Gemini Flash Image", family: "Google", note: "text-to-image, free tier key", reasoning: false, vision: false, maxOutput: 0, image: true },
   { id: "gpt-image-1", provider: "openai", label: "GPT Image 1", family: "OpenAI", note: "text-to-image, needs OPENAI_API_KEY", reasoning: false, vision: false, maxOutput: 0, image: true },
   { id: "fal-ai/flux/dev", provider: "fal", label: "Flux Dev", family: "fal.ai", note: "text-to-image, needs FAL_KEY", reasoning: false, vision: false, maxOutput: 0, image: true },
@@ -84,6 +89,7 @@ const VERIFIED_EXTRA: Partial<Record<ProviderId, Set<string>>> = {
   nvidia: new Set(["minimaxai/minimax-m3.1-flash"]),
   // Inception lists helper endpoints (e.g. mercury-decide) that chat rejects.
   inception: new Set<string>(),
+  gemini: new Set<string>(),
 };
 
 const DISCOVERY_TTL_MS = 10 * 60 * 1000;
@@ -226,6 +232,41 @@ async function discoverProvider(provider: ProviderId): Promise<PlaygroundModel[]
 }
 
 /** Curated models first, then everything the configured gateways advertise. */
+// Image models fail independently of text ones: a Gemini key that chats fine
+// still returns 429 for every image call on the free tier. One tiny render
+// decides whether the image entry is worth showing.
+const imageProbeCache = new Map<ProviderId, { at: number; ok: boolean }>();
+
+async function imageModelUsable(provider: ProviderId, key: string): Promise<boolean> {
+  const cached = imageProbeCache.get(provider);
+  if (cached && Date.now() - cached.at < DISCOVERY_TTL_MS) return cached.ok;
+  if (provider !== "google") return true;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DISCOVERY_TIMEOUT_MS * 2);
+  let ok = false;
+  try {
+    const res = await fetch(
+      `${PROVIDERS.google.baseUrl()}/models/gemini-3.1-flash-lite-image:generateContent?key=${encodeURIComponent(key)}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: "red dot" }] }],
+          generationConfig: { responseModalities: ["IMAGE"] },
+        }),
+        signal: controller.signal,
+      },
+    );
+    ok = res.ok;
+  } catch {
+    ok = false;
+  } finally {
+    clearTimeout(timer);
+  }
+  imageProbeCache.set(provider, { at: Date.now(), ok });
+  return ok;
+}
+
 function providerAvailable(provider: ProviderId) {
   const keyName = PROVIDERS[provider].envKey;
   return keyName ? Boolean(env(keyName)) : true;
@@ -247,9 +288,21 @@ export async function playgroundModels(): Promise<Array<PlaygroundModel & { avai
     }),
   );
 
+  const imageOk = new Map<ProviderId, boolean>();
+  await Promise.all(
+    Array.from(new Set(CATALOG.filter((m) => m.image).map((m) => m.provider))).map(async (provider) => {
+      const keyName = PROVIDERS[provider].envKey;
+      const key = keyName ? env(keyName) : "";
+      const usable = key || !keyName ? await imageModelUsable(provider, key as string) : false;
+      imageOk.set(provider, usable && !blocked.has(provider));
+    }),
+  );
+
   const curated = CATALOG.map((model) => ({
     ...model,
-    available: providerAvailable(model.provider) && !blocked.has(model.provider),
+    available: model.image
+      ? Boolean(imageOk.get(model.provider))
+      : providerAvailable(model.provider) && !blocked.has(model.provider),
   }));
   const known = new Set(curated.map((m) => m.id));
   const extra = discovered
