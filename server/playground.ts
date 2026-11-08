@@ -20,7 +20,7 @@ function withV1(base: string) {
   return /\/v1$/.test(trimmed) ? trimmed : `${trimmed}/v1`;
 }
 
-type ProviderId = "inception" | "nvidia" | "freellm" | "hf" | "astraflow" | "atlas" | "pollinations";
+type ProviderId = "inception" | "nvidia" | "freellm" | "hf" | "astraflow" | "atlas" | "pollinations" | "openai" | "fal";
 
 const PROVIDERS: Record<ProviderId, { baseUrl: () => string; envKey?: string; family: string; chatPath?: string }> = {
   inception: { baseUrl: () => withV1(env("INCEPTION_BASE_URL") || "https://api.inceptionlabs.ai/v1"), envKey: "INCEPTION_API_KEY", family: "Inception Labs" },
@@ -32,6 +32,8 @@ const PROVIDERS: Record<ProviderId, { baseUrl: () => string; envKey?: string; fa
   // Keyless free tier: Pollinations serves one anonymous reasoning model with no
   // signup, which is what "free models" means without any credit card.
   pollinations: { baseUrl: () => (env("POLLINATIONS_BASE_URL") || "https://text.pollinations.ai").replace(/\/+$/, ""), family: "Pollinations", chatPath: "/openai" },
+  openai: { baseUrl: () => (env("OPENAI_BASE_URL") || "https://api.openai.com/v1").replace(/\/+$/, ""), envKey: "OPENAI_API_KEY", family: "OpenAI" },
+  fal: { baseUrl: () => (env("FAL_BASE_URL") || "https://fal.run").replace(/\/+$/, ""), envKey: "FAL_KEY", family: "fal.ai" },
   astraflow: { baseUrl: () => withV1(env("ASTRAFLOW_BASE_URL") || "https://api.umodelverse.ai/v1"), envKey: "ASTRAFLOW_API_KEY", family: "Astraflow" },
   atlas: { baseUrl: () => withV1(env("ATLAS_BASE_URL") || "https://api.atlascloud.ai/v1"), envKey: "ATLAS_API_KEY", family: "Atlas Cloud" },
 };
@@ -51,7 +53,8 @@ type PlaygroundModel = {
 // Curated catalogue: the models this NVIDIA/Inception account can actually
 // serve. Order matters — it is the picker order.
 const CATALOG: PlaygroundModel[] = [
-  { id: "pollinations-image", provider: "pollinations", label: "Flux (free image)", family: "Pollinations", note: "free text-to-image, no key", reasoning: false, vision: false, maxOutput: 0, image: true },
+  { id: "gpt-image-1", provider: "openai", label: "GPT Image 1", family: "OpenAI", note: "text-to-image, needs OPENAI_API_KEY", reasoning: false, vision: false, maxOutput: 0, image: true },
+  { id: "fal-ai/flux/dev", provider: "fal", label: "Flux Dev", family: "fal.ai", note: "text-to-image, needs FAL_KEY", reasoning: false, vision: false, maxOutput: 0, image: true },
   { id: "openai-fast", provider: "pollinations", label: "GPT-OSS 20B", family: "Pollinations", note: "free, no key, reasoning", reasoning: true, vision: false, maxOutput: 4096 },
   { id: "mercury-3", provider: "inception", label: "Mercury 3", family: "Inception Labs", note: "diffusion LM, near-instant", reasoning: false, vision: false, maxOutput: 8192 },
   { id: "nvidia/nemotron-3.5-bolt-e4b", provider: "nvidia", label: "Nemotron 3.5 Bolt", family: "NVIDIA NIM", note: "tiny and fast, no thinking", reasoning: false, vision: false, maxOutput: 8192 },
@@ -276,13 +279,25 @@ function sanitizeMessages(raw: unknown): ChatMessage[] {
     .slice(-24);
 }
 
-// Text-to-image needs no key on Pollinations: the prompt goes in the path and
-// the image comes back as bytes. The client loads the returned URL directly.
+// Text-to-image is provider-specific. Each image model names its provider, so
+// adding a key is all it takes for that model to appear in the picker.
 async function handleImage(req: Request, res: Response) {
-  const body = (req.body || {}) as { prompt?: unknown; width?: unknown; height?: unknown; seed?: unknown };
-  const prompt = String(body.prompt || "").trim().slice(0, 1200);
+  const body = (req.body || {}) as { prompt?: unknown; model?: unknown; size?: unknown };
+  const prompt = String(body.prompt || "").trim().slice(0, 4000);
   if (prompt.length < 3) {
     res.status(400).json({ error: "Describe the image you want (at least a few words)." });
+    return;
+  }
+  const requested = String(body.model || "gpt-image-1");
+  const model = CATALOG.find((m) => m.id === requested && m.image);
+  if (!model) {
+    res.status(400).json({ error: `Unknown image model: ${requested}` });
+    return;
+  }
+  const provider = PROVIDERS[model.provider];
+  const apiKey = provider.envKey ? env(provider.envKey) : "";
+  if (provider.envKey && !apiKey) {
+    res.status(503).json({ error: `${model.label} is not configured on this deployment (${provider.envKey} missing).` });
     return;
   }
   const ip = String(req.headers["x-forwarded-for"] || "local").split(",")[0].trim();
@@ -290,17 +305,50 @@ async function handleImage(req: Request, res: Response) {
     res.status(429).json({ error: "Image limit reached for this hour. Try again shortly." });
     return;
   }
-  const size = (value: unknown, fallback: number) => {
-    const n = Number(value);
-    return Number.isFinite(n) ? Math.min(1536, Math.max(256, Math.round(n / 64) * 64)) : fallback;
-  };
-  const width = size(body.width, 1024);
-  const height = size(body.height, 1024);
-  const seed = Number.isFinite(Number(body.seed)) ? Math.round(Number(body.seed)) : Math.floor(Math.random() * 1e6);
-  const base = (env("POLLINATIONS_IMAGE_BASE_URL") || "https://image.pollinations.ai").replace(/\/+$/, "");
-  const url = `${base}/prompt/${encodeURIComponent(prompt)}?width=${width}&height=${height}&seed=${seed}&nologo=true&model=flux`;
 
-  res.status(200).json({ url, prompt, width, height, seed, model: "flux" });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 55000);
+  try {
+    let url = "";
+    if (model.provider === "openai") {
+      const upstream = await fetch(`${provider.baseUrl()}/images/generations`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ model: model.id, prompt, size: "1024x1024", n: 1 }),
+        signal: controller.signal,
+      });
+      const payload = (await upstream.json().catch(() => ({}))) as {
+        data?: Array<{ url?: string; b64_json?: string }>;
+        error?: { message?: string };
+      };
+      if (!upstream.ok) throw new Error(payload.error?.message || `${model.label} returned ${upstream.status}`);
+      const first = payload.data?.[0];
+      url = first?.url || (first?.b64_json ? `data:image/png;base64,${first.b64_json}` : "");
+    } else if (model.provider === "fal") {
+      const upstream = await fetch(`${provider.baseUrl()}/${model.id}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Key ${apiKey}` },
+        body: JSON.stringify({ prompt, image_size: "square_hd", num_images: 1 }),
+        signal: controller.signal,
+      });
+      const payload = (await upstream.json().catch(() => ({}))) as {
+        images?: Array<{ url?: string }>;
+        detail?: unknown;
+      };
+      if (!upstream.ok) throw new Error(typeof payload.detail === "string" ? payload.detail : `${model.label} returned ${upstream.status}`);
+      url = payload.images?.[0]?.url || "";
+    }
+
+    if (!url) throw new Error(`${model.label} did not return an image.`);
+    res.status(200).json({ url, prompt, model: model.id });
+  } catch (error) {
+    const timedOut = controller.signal.aborted;
+    res.status(timedOut ? 504 : 502).json({
+      error: timedOut ? "The image took too long to render. Try a shorter prompt." : String((error as Error)?.message || error),
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function handleModels(req: Request, res: Response) {

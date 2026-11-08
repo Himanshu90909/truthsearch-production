@@ -383,7 +383,7 @@ export default function Playground() {
         const res = await fetch(`${API_BASE}/api/playground/image`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ prompt: text, width: 1024, height: 1024 }),
+          body: JSON.stringify({ prompt: text, model: activeModel.id }),
         });
         const data = (await res.json()) as { url?: string; error?: string };
         if (!res.ok || !data.url) throw new Error(data.error || `Image generation failed (${res.status}).`);
@@ -741,7 +741,7 @@ export default function Playground() {
                         <a href={message.imageUrl} target="_blank" rel="noopener noreferrer">
                           Open full size <ArrowUpRight size={12} />
                         </a>
-                        <span className="pg-meta-dim">free flux · no key</span>
+                        <span className="pg-meta-dim">{activeModel?.family || "image"} · 1024 × 1024</span>
                       </figcaption>
                     </figure>
                   ) : (
@@ -762,7 +762,7 @@ export default function Playground() {
               <div className="pg-answer">
                 <div className="pg-answer-meta">
                   <span className="pg-model-chip">{activeModel?.label}</span>
-                  {!live && <span className="pg-meta-dim">thinking…</span>}
+                  {!live && <span className="pg-meta-dim">{activeModel?.image ? "rendering…" : "thinking…"}</span>}
                 </div>
                 {liveReasoning && (
                   <details className="pg-reasoning" open>
@@ -852,7 +852,7 @@ export default function Playground() {
             </button>
             )}
             <span className="pg-composer-hint">
-              {activeModel?.image ? "free text-to-image · no key" : activeModel ? `${settings.temperature.toFixed(2)} temp · ${settings.maxTokens} tokens` : ""}
+              {activeModel?.image ? `${activeModel.family} · text-to-image` : activeModel ? `${settings.temperature.toFixed(2)} temp · ${settings.maxTokens} tokens` : ""}
             </span>
             {busy ? (
               <button type="button" className="pg-send stop" onClick={stop}>
