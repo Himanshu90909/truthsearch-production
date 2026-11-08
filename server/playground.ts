@@ -20,12 +20,15 @@ function withV1(base: string) {
   return /\/v1$/.test(trimmed) ? trimmed : `${trimmed}/v1`;
 }
 
-type ProviderId = "inception" | "nvidia" | "freellm" | "astraflow" | "atlas";
+type ProviderId = "inception" | "nvidia" | "freellm" | "hf" | "astraflow" | "atlas";
 
 const PROVIDERS: Record<ProviderId, { baseUrl: () => string; envKey: string; family: string }> = {
   inception: { baseUrl: () => withV1(env("INCEPTION_BASE_URL") || "https://api.inceptionlabs.ai/v1"), envKey: "INCEPTION_API_KEY", family: "Inception Labs" },
   nvidia: { baseUrl: () => withV1(env("NVIDIA_BASE_URL") || "https://integrate.api.nvidia.com/v1"), envKey: "NVIDIA_API_KEY", family: "NVIDIA NIM" },
   freellm: { baseUrl: () => withV1(env("FREELLMAPI_BASE_URL") || "https://freellmapi.vercel.app"), envKey: "FREELLMAPI_API_KEY", family: "Free models" },
+  // Hugging Face router: one OpenAI-compatible endpoint in front of every
+  // serverless provider HF hosts. The catalogue is public, chat needs HF_API_KEY.
+  hf: { baseUrl: () => withV1(env("HF_BASE_URL") || "https://router.huggingface.co/v1"), envKey: "HF_API_KEY", family: "Hugging Face" },
   astraflow: { baseUrl: () => withV1(env("ASTRAFLOW_BASE_URL") || "https://api.umodelverse.ai/v1"), envKey: "ASTRAFLOW_API_KEY", family: "Astraflow" },
   atlas: { baseUrl: () => withV1(env("ATLAS_BASE_URL") || "https://api.atlascloud.ai/v1"), envKey: "ATLAS_API_KEY", family: "Atlas Cloud" },
 };
@@ -92,6 +95,30 @@ function labelFor(id: string) {
     .trim();
 }
 
+// Hugging Face only serves the router to accounts with PRO or pre-paid
+// credits, so a key alone is not enough. One 1-token call decides whether the
+// catalogue is usable and keeps dead models out of the picker.
+async function hfCanInfer(key: string, modelId: string): Promise<string | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DISCOVERY_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${PROVIDERS.hf.baseUrl()}/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: modelId, messages: [{ role: "user", content: "hi" }], max_tokens: 1 }),
+      signal: controller.signal,
+    });
+    if (res.ok) return null;
+    const detail = (await res.text()).slice(0, 300);
+    if (res.status === 402 || /credits|PRO|quota|billing/i.test(detail)) return "needs credits or PRO";
+    return `http ${res.status}`;
+  } catch {
+    return "probe failed";
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function discoverProvider(provider: ProviderId): Promise<PlaygroundModel[]> {
   const key = env(PROVIDERS[provider].envKey);
   if (!key) return [];
@@ -138,6 +165,14 @@ async function discoverProvider(provider: ProviderId): Promise<PlaygroundModel[]
   } finally {
     clearTimeout(timer);
   }
+  if (provider === "hf" && models.length) {
+    const problem = await hfCanInfer(key, models[0].id);
+    if (problem) {
+      discoveryStatus.hf = `catalogue ${models.length}, unusable: ${problem}`;
+      models = [];
+    }
+  }
+
   discoveryCache.set(provider, { at: Date.now(), models, status: discoveryStatus[provider] || (models.length ? "ok" : "empty") });
   return models;
 }
