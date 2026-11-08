@@ -706,7 +706,7 @@ export default function Playground() {
             ),
           )}
 
-          {(live || liveReasoning || busy) && (
+          {(busy || live) && (
             <div className="pg-row bot">
               <div className="pg-avatar">
                 <Loader2 size={13} className="spin" />
