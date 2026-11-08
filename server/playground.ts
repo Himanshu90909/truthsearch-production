@@ -20,7 +20,7 @@ function withV1(base: string) {
   return /\/v1$/.test(trimmed) ? trimmed : `${trimmed}/v1`;
 }
 
-type ProviderId = "inception" | "nvidia" | "freellm" | "hf" | "astraflow" | "atlas" | "pollinations" | "openai" | "fal";
+type ProviderId = "inception" | "nvidia" | "freellm" | "hf" | "astraflow" | "atlas" | "pollinations" | "openai" | "fal" | "google";
 
 const PROVIDERS: Record<ProviderId, { baseUrl: () => string; envKey?: string; family: string; chatPath?: string }> = {
   inception: { baseUrl: () => withV1(env("INCEPTION_BASE_URL") || "https://api.inceptionlabs.ai/v1"), envKey: "INCEPTION_API_KEY", family: "Inception Labs" },
@@ -34,6 +34,7 @@ const PROVIDERS: Record<ProviderId, { baseUrl: () => string; envKey?: string; fa
   pollinations: { baseUrl: () => (env("POLLINATIONS_BASE_URL") || "https://text.pollinations.ai").replace(/\/+$/, ""), family: "Pollinations", chatPath: "/openai" },
   openai: { baseUrl: () => (env("OPENAI_BASE_URL") || "https://api.openai.com/v1").replace(/\/+$/, ""), envKey: "OPENAI_API_KEY", family: "OpenAI" },
   fal: { baseUrl: () => (env("FAL_BASE_URL") || "https://fal.run").replace(/\/+$/, ""), envKey: "FAL_KEY", family: "fal.ai" },
+  google: { baseUrl: () => (env("GEMINI_BASE_URL") || "https://generativelanguage.googleapis.com/v1beta").replace(/\/+$/, ""), envKey: "GEMINI_API_KEY", family: "Google" },
   astraflow: { baseUrl: () => withV1(env("ASTRAFLOW_BASE_URL") || "https://api.umodelverse.ai/v1"), envKey: "ASTRAFLOW_API_KEY", family: "Astraflow" },
   atlas: { baseUrl: () => withV1(env("ATLAS_BASE_URL") || "https://api.atlascloud.ai/v1"), envKey: "ATLAS_API_KEY", family: "Atlas Cloud" },
 };
@@ -53,6 +54,7 @@ type PlaygroundModel = {
 // Curated catalogue: the models this NVIDIA/Inception account can actually
 // serve. Order matters — it is the picker order.
 const CATALOG: PlaygroundModel[] = [
+  { id: "gemini-2.5-flash-image", provider: "google", label: "Gemini Flash Image", family: "Google", note: "text-to-image, free tier key", reasoning: false, vision: false, maxOutput: 0, image: true },
   { id: "gpt-image-1", provider: "openai", label: "GPT Image 1", family: "OpenAI", note: "text-to-image, needs OPENAI_API_KEY", reasoning: false, vision: false, maxOutput: 0, image: true },
   { id: "fal-ai/flux/dev", provider: "fal", label: "Flux Dev", family: "fal.ai", note: "text-to-image, needs FAL_KEY", reasoning: false, vision: false, maxOutput: 0, image: true },
   { id: "openai-fast", provider: "pollinations", label: "GPT-OSS 20B", family: "Pollinations", note: "free, no key, reasoning", reasoning: true, vision: false, maxOutput: 4096 },
@@ -128,6 +130,42 @@ async function hfCanInfer(key: string, modelId: string): Promise<string | null> 
   }
 }
 
+// Some keys authenticate but cannot infer: a fresh OpenAI key with no credits
+// answers /models and then 429s every call. One cheap probe per provider keeps
+// those models (text and image) out of the picker until the account can pay.
+const PROBE_MODELS: Partial<Record<ProviderId, string>> = { hf: "", openai: "gpt-4o-mini" };
+const probeCache = new Map<ProviderId, { at: number; problem: string | null }>();
+
+async function probeProvider(provider: ProviderId, key: string, firstModel?: string): Promise<string | null> {
+  const cached = probeCache.get(provider);
+  if (cached && Date.now() - cached.at < DISCOVERY_TTL_MS) return cached.problem;
+
+  const model = PROBE_MODELS[provider] || firstModel || "";
+  if (!model) return null;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DISCOVERY_TIMEOUT_MS);
+  let problem: string | null = null;
+  try {
+    const res = await fetch(`${PROVIDERS[provider].baseUrl()}${PROVIDERS[provider].chatPath || "/chat/completions"}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+      body: JSON.stringify({ model, messages: [{ role: "user", content: "hi" }], max_tokens: 1 }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const detail = (await res.text()).slice(0, 300);
+      problem = /credit|quota|billing|402/i.test(detail) || res.status === 402 ? "no credits" : `http ${res.status}`;
+    }
+  } catch {
+    problem = "probe failed";
+  } finally {
+    clearTimeout(timer);
+  }
+  probeCache.set(provider, { at: Date.now(), problem });
+  return problem;
+}
+
 async function discoverProvider(provider: ProviderId): Promise<PlaygroundModel[]> {
   const keyName = PROVIDERS[provider].envKey;
   const key = keyName ? env(keyName) : "";
@@ -198,19 +236,31 @@ export async function playgroundModels(): Promise<Array<PlaygroundModel & { avai
     await Promise.all((Object.keys(PROVIDERS) as ProviderId[]).map(discoverProvider))
   ).flat();
 
+  const blocked = new Set<ProviderId>();
+  await Promise.all(
+    (Object.entries(PROBE_MODELS) as Array<[ProviderId, string]>).map(async ([provider]) => {
+      const keyName = PROVIDERS[provider].envKey;
+      const key = keyName ? env(keyName) : "";
+      if (!key) return;
+      const problem = await probeProvider(provider, key);
+      if (problem) blocked.add(provider);
+    }),
+  );
+
   const curated = CATALOG.map((model) => ({
     ...model,
-    available: providerAvailable(model.provider),
+    available: providerAvailable(model.provider) && !blocked.has(model.provider),
   }));
   const known = new Set(curated.map((m) => m.id));
   const extra = discovered
     .filter((m) => !known.has(m.id))
+    .filter((m) => !blocked.has(m.provider))
     .filter((m) => {
       const allow = VERIFIED_EXTRA[m.provider];
       // Providers with a curated list only surface models verified to answer.
       return allow ? allow.has(m.id) : true;
     })
-    .map((m) => ({ ...m, available: providerAvailable(m.provider) }));
+    .map((m) => ({ ...m, available: providerAvailable(m.provider) && !blocked.has(m.provider) }));
 
   return [...curated, ...extra];
 }
@@ -324,6 +374,29 @@ async function handleImage(req: Request, res: Response) {
       if (!upstream.ok) throw new Error(payload.error?.message || `${model.label} returned ${upstream.status}`);
       const first = payload.data?.[0];
       url = first?.url || (first?.b64_json ? `data:image/png;base64,${first.b64_json}` : "");
+    } else if (model.provider === "google") {
+      // Gemini image models answer through generateContent with IMAGE modality,
+      // and the free AI Studio tier covers them without billing.
+      const upstream = await fetch(
+        `${provider.baseUrl()}/models/${model.id}:generateContent?key=${encodeURIComponent(String(apiKey || ""))}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            generationConfig: { responseModalities: ["IMAGE"] },
+          }),
+          signal: controller.signal,
+        },
+      );
+      const payload = (await upstream.json().catch(() => ({}))) as {
+        candidates?: Array<{ content?: { parts?: Array<{ inlineData?: { data?: string; mimeType?: string } }> } }>;
+        error?: { message?: string };
+      };
+      if (!upstream.ok) throw new Error(payload.error?.message || `${model.label} returned ${upstream.status}`);
+      const part = payload.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data);
+      const data = part?.inlineData?.data;
+      if (data) url = `data:${part?.inlineData?.mimeType || "image/png"};base64,${data}`;
     } else if (model.provider === "fal") {
       const upstream = await fetch(`${provider.baseUrl()}/${model.id}`, {
         method: "POST",
