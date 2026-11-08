@@ -35,6 +35,7 @@ function diagnostics(req: Request, res: Response): boolean {
       inceptionPrimary: process.env.INCEPTION_PRIMARY === "true",
       gnaniKey: Boolean(process.env.GNANI_API_KEY),
       freellmapiKey: Boolean(process.env.FREELLMAPI_BASE_URL && process.env.FREELLMAPI_API_KEY),
+      freellmapiBase: process.env.FREELLMAPI_BASE_URL || null,
       sync: process.env.SYNC_RESEARCH === "true" || process.env.VERCEL === "1",
     });
     return true;

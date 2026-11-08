@@ -20,17 +20,14 @@ function withV1(base: string) {
   return /\/v1$/.test(trimmed) ? trimmed : `${trimmed}/v1`;
 }
 
-type ProviderId = "inception" | "nvidia";
+type ProviderId = "inception" | "nvidia" | "freellm" | "astraflow" | "atlas";
 
-const PROVIDERS: Record<ProviderId, { baseUrl: () => string; envKey: string }> = {
-  inception: {
-    baseUrl: () => withV1(env("INCEPTION_BASE_URL") || "https://api.inceptionlabs.ai/v1"),
-    envKey: "INCEPTION_API_KEY",
-  },
-  nvidia: {
-    baseUrl: () => withV1(env("NVIDIA_BASE_URL") || "https://integrate.api.nvidia.com/v1"),
-    envKey: "NVIDIA_API_KEY",
-  },
+const PROVIDERS: Record<ProviderId, { baseUrl: () => string; envKey: string; family: string }> = {
+  inception: { baseUrl: () => withV1(env("INCEPTION_BASE_URL") || "https://api.inceptionlabs.ai/v1"), envKey: "INCEPTION_API_KEY", family: "Inception Labs" },
+  nvidia: { baseUrl: () => withV1(env("NVIDIA_BASE_URL") || "https://integrate.api.nvidia.com/v1"), envKey: "NVIDIA_API_KEY", family: "NVIDIA NIM" },
+  freellm: { baseUrl: () => withV1(env("FREELLMAPI_BASE_URL") || "https://freellmapi.vercel.app"), envKey: "FREELLMAPI_API_KEY", family: "Free models" },
+  astraflow: { baseUrl: () => withV1(env("ASTRAFLOW_BASE_URL") || "https://api.umodelverse.ai/v1"), envKey: "ASTRAFLOW_API_KEY", family: "Astraflow" },
+  atlas: { baseUrl: () => withV1(env("ATLAS_BASE_URL") || "https://api.atlascloud.ai/v1"), envKey: "ATLAS_API_KEY", family: "Atlas Cloud" },
 };
 
 type PlaygroundModel = {
@@ -58,18 +55,119 @@ const CATALOG: PlaygroundModel[] = [
   { id: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", provider: "nvidia", label: "Nemotron 3 Nano Omni", family: "NVIDIA NIM", note: "small, multimodal, thinking", reasoning: true, vision: true, maxOutput: 8192 },
 ];
 
-export function playgroundModels() {
-  return CATALOG.map((model) => ({
-    id: model.id,
-    label: model.label,
-    family: model.family,
-    note: model.note,
-    reasoning: model.reasoning,
-    vision: model.vision,
-    provider: model.provider,
-    maxOutput: model.maxOutput,
+// ---------------------------------------------------------------------------
+// Free-model discovery. Anything an OpenAI-compatible provider advertises at
+// /models is listed automatically, so a free gateway (FreeLLMAPI) or a trial
+// key (Astraflow, Atlas) needs no code change: add the env vars and the models
+// show up in the picker. Curated entries keep their hand-written labels.
+// ---------------------------------------------------------------------------
+// NVIDIA publishes far more model ids than this account is allowed to serve:
+// probing 41 of them on 2026-11-08 left 7 working, so the extra ones are only
+// listed once they answer. Re-probe with /api/playground/models?debug=1.
+const VERIFIED_EXTRA: Partial<Record<ProviderId, Set<string>>> = {
+  // Probed 2026-11-08: gemma-4-31b-it never finished inside 55s, so only
+  // this one extra is listed alongside the curated Nemotron/Mistral/Meta set.
+  nvidia: new Set(["minimaxai/minimax-m3.1-flash"]),
+  // Inception lists helper endpoints (e.g. mercury-decide) that chat rejects.
+  inception: new Set<string>(),
+};
+
+const DISCOVERY_TTL_MS = 10 * 60 * 1000;
+const DISCOVERY_TIMEOUT_MS = 6000;
+const DISCOVERY_LIMIT = 40;
+const SKIP_MODEL = /(embed|whisper|tts|speech|audio|dall|stable-diffusion|sdxl|flux|rerank|moderation|guard|ocr|fuyu|deplot|kosmos|detector|calibration|diffusion|reward|classifier|safety)/i;
+const VISION_HINT = /(vision|--vl|-vl\b|llava|pixtral|gemma-?3|omni|multimodal)/i;
+const REASONING_HINT = /(think|reason|r1\b|qwq|o1|o3|deepseek-r)/i;
+
+type Discovered = { at: number; models: PlaygroundModel[]; status: string };
+const discoveryStatus: Record<string, string> = {};
+const discoveryCache = new Map<ProviderId, Discovered>();
+
+function labelFor(id: string) {
+  const tail = id.split("/").pop() || id;
+  return tail
+    .replace(/[-_.]+/g, " ")
+    .replace(/\b([a-z])/g, (m) => m.toUpperCase())
+    .replace(/\b(Gpt|Llm|Api|Ai)\b/g, (m) => m.toUpperCase())
+    .trim();
+}
+
+async function discoverProvider(provider: ProviderId): Promise<PlaygroundModel[]> {
+  const key = env(PROVIDERS[provider].envKey);
+  if (!key) return [];
+  const cached = discoveryCache.get(provider);
+  if (cached && Date.now() - cached.at < DISCOVERY_TTL_MS) return cached.models;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DISCOVERY_TIMEOUT_MS);
+  let models: PlaygroundModel[] = [];
+  try {
+    const res = await fetch(`${PROVIDERS[provider].baseUrl()}/models`, {
+      headers: { authorization: `Bearer ${key}`, accept: "application/json" },
+      signal: controller.signal,
+    });
+    discoveryStatus[provider] = `http ${res.status}`;
+    if (res.ok) {
+      const payload: unknown = await res.json();
+      const raw = Array.isArray(payload)
+        ? payload
+        : ((payload as { data?: unknown[]; models?: unknown[] })?.data ??
+           (payload as { models?: unknown[] })?.models ??
+           []);
+      const seen = new Set<string>();
+      discoveryStatus[provider] = `http ${res.status}, ${raw.length} entries`;
+      models = (raw as Array<{ id?: string; name?: string }>)
+        .map((item) => String(item?.id || item?.name || "").trim())
+        .filter((id) => id && !SKIP_MODEL.test(id) && !seen.has(id) && seen.add(id))
+        .slice(0, DISCOVERY_LIMIT)
+        .map((id) => ({
+          id,
+          provider,
+          label: labelFor(id),
+          family: PROVIDERS[provider].family,
+          note: "free tier",
+          reasoning: REASONING_HINT.test(id),
+          vision: VISION_HINT.test(id),
+          maxOutput: 8192,
+        }));
+    }
+  } catch (error) {
+    discoveryStatus[provider] = `error: ${String((error as Error)?.message || error).slice(0, 80)}`;
+    // A missing or slow gateway must never break the picker: cached or empty.
+    models = cached?.models ?? [];
+  } finally {
+    clearTimeout(timer);
+  }
+  discoveryCache.set(provider, { at: Date.now(), models, status: discoveryStatus[provider] || (models.length ? "ok" : "empty") });
+  return models;
+}
+
+/** Curated models first, then everything the configured gateways advertise. */
+export async function playgroundModels(): Promise<Array<PlaygroundModel & { available: boolean }>> {
+  const discovered = (
+    await Promise.all((Object.keys(PROVIDERS) as ProviderId[]).map(discoverProvider))
+  ).flat();
+
+  const curated = CATALOG.map((model) => ({
+    ...model,
     available: Boolean(env(PROVIDERS[model.provider].envKey)),
   }));
+  const known = new Set(curated.map((m) => m.id));
+  const extra = discovered
+    .filter((m) => !known.has(m.id))
+    .filter((m) => {
+      const allow = VERIFIED_EXTRA[m.provider];
+      // Providers with a curated list only surface models verified to answer.
+      return allow ? allow.has(m.id) : true;
+    })
+    .map((m) => ({ ...m, available: Boolean(env(PROVIDERS[m.provider].envKey)) }));
+
+  return [...curated, ...extra];
+}
+
+async function resolveModel(id: string) {
+  const all = await playgroundModels();
+  return all.find((m) => m.id === id) ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -131,9 +229,11 @@ function sanitizeMessages(raw: unknown): ChatMessage[] {
     .slice(-24);
 }
 
-async function handleModels(_req: Request, res: Response) {
+async function handleModels(req: Request, res: Response) {
   res.setHeader("Cache-Control", "no-store");
-  res.status(200).json({ models: playgroundModels() });
+  const models = await playgroundModels();
+  const debug = String(req.query?.debug || "") === "1";
+  res.status(200).json(debug ? { models, discovery: discoveryStatus } : { models });
 }
 
 async function handleChat(req: Request, res: Response) {
@@ -158,7 +258,7 @@ async function handleChat(req: Request, res: Response) {
   }
 
   const requested = String((body as { model?: string }).model || "");
-  const model = CATALOG.find((m) => m.id === requested);
+  const model = await resolveModel(requested);
   if (!model) {
     res.status(400).json({ error: `Unknown model: ${requested || "(none)"}` });
     return;
