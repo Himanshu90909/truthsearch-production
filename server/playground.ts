@@ -20,7 +20,7 @@ function withV1(base: string) {
   return /\/v1$/.test(trimmed) ? trimmed : `${trimmed}/v1`;
 }
 
-type ProviderId = "inception" | "nvidia" | "freellm" | "hf" | "astraflow" | "atlas" | "pollinations" | "openai" | "fal" | "google" | "gemini";
+type ProviderId = "inception" | "nvidia" | "freellm" | "hf" | "astraflow" | "atlas" | "pollinations" | "openai" | "fal" | "google" | "gemini" | "evon";
 
 const PROVIDERS: Record<ProviderId, { baseUrl: () => string; envKey?: string; family: string; chatPath?: string }> = {
   inception: { baseUrl: () => withV1(env("INCEPTION_BASE_URL") || "https://api.inceptionlabs.ai/v1"), envKey: "INCEPTION_API_KEY", family: "Inception Labs" },
@@ -38,6 +38,10 @@ const PROVIDERS: Record<ProviderId, { baseUrl: () => string; envKey?: string; fa
   // even when image generation on the same key is quota-blocked.
   gemini: { baseUrl: () => `${(env("GEMINI_BASE_URL") || "https://generativelanguage.googleapis.com/v1beta").replace(/\/+$/, "")}/openai`, envKey: "GOOGLE_API_KEY", family: "Google" },
   google: { baseUrl: () => (env("GEMINI_BASE_URL") || "https://generativelanguage.googleapis.com/v1beta").replace(/\/+$/, ""), envKey: "GOOGLE_API_KEY", family: "Google" },
+  // Gnani Evon v3.3 (30B MoE, Apache 2.0) has no hosted inference anywhere, so
+  // it only appears once a self-hosted OpenAI-compatible endpoint (vLLM/SGLang
+  // on Modal or an HF Inference Endpoint) is pointed at by EVON_BASE_URL.
+  evon: { baseUrl: () => (env("EVON_BASE_URL") || "").replace(/\/+$/, ""), envKey: "EVON_API_KEY", family: "Gnani" },
   astraflow: { baseUrl: () => withV1(env("ASTRAFLOW_BASE_URL") || "https://api.umodelverse.ai/v1"), envKey: "ASTRAFLOW_API_KEY", family: "Astraflow" },
   atlas: { baseUrl: () => withV1(env("ATLAS_BASE_URL") || "https://api.atlascloud.ai/v1"), envKey: "ATLAS_API_KEY", family: "Atlas Cloud" },
 };
@@ -57,6 +61,7 @@ type PlaygroundModel = {
 // Curated catalogue: the models this NVIDIA/Inception account can actually
 // serve. Order matters — it is the picker order.
 const CATALOG: PlaygroundModel[] = [
+  { id: "gnani/gnani-evon-v3.3-30B-A3B", provider: "evon", label: "Evon v3.3 30B", family: "Gnani", note: "Indic MoE, self-hosted", reasoning: true, vision: false, maxOutput: 32768 },
   { id: "gemini-3.1-flash-lite", provider: "gemini", label: "Gemini 3.1 Flash Lite", family: "Google", note: "free tier", reasoning: false, vision: false, maxOutput: 8192 },
   { id: "gemini-2.5-flash", provider: "gemini", label: "Gemini 2.5 Flash", family: "Google", note: "free tier, vision", reasoning: false, vision: true, maxOutput: 8192 },
   { id: "gemini-2.5-flash-image", provider: "google", label: "Gemini Flash Image", family: "Google", note: "text-to-image, free tier key", reasoning: false, vision: false, maxOutput: 0, image: true },
@@ -269,6 +274,7 @@ async function imageModelUsable(provider: ProviderId, key: string): Promise<bool
 
 function providerAvailable(provider: ProviderId) {
   const keyName = PROVIDERS[provider].envKey;
+  if (provider === "evon") return Boolean(env("EVON_BASE_URL") && env("EVON_API_KEY"));
   return keyName ? Boolean(env(keyName)) : true;
 }
 
