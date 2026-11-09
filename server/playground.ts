@@ -20,7 +20,7 @@ function withV1(base: string) {
   return /\/v1$/.test(trimmed) ? trimmed : `${trimmed}/v1`;
 }
 
-type ProviderId = "inception" | "nvidia" | "freellm" | "hf" | "astraflow" | "atlas" | "pollinations" | "openai" | "fal" | "google" | "gemini" | "evon";
+type ProviderId = "inception" | "nvidia" | "freellm" | "hf" | "astraflow" | "atlas" | "pollinations" | "openai" | "fal" | "google" | "gemini" | "evon" | "groq" | "openrouter" | "cerebras";
 
 const PROVIDERS: Record<ProviderId, { baseUrl: () => string; envKey?: string; family: string; chatPath?: string }> = {
   inception: { baseUrl: () => withV1(env("INCEPTION_BASE_URL") || "https://api.inceptionlabs.ai/v1"), envKey: "INCEPTION_API_KEY", family: "Inception Labs" },
@@ -41,6 +41,11 @@ const PROVIDERS: Record<ProviderId, { baseUrl: () => string; envKey?: string; fa
   // Gnani Evon v3.3 (30B MoE, Apache 2.0) has no hosted inference anywhere, so
   // it only appears once a self-hosted OpenAI-compatible endpoint (vLLM/SGLang
   // on Modal or an HF Inference Endpoint) is pointed at by EVON_BASE_URL.
+  // Free-tier gateways that actually serve Qwen. Each lights up the moment its
+  // key exists, so adding one account adds the whole Qwen family to the picker.
+  groq: { baseUrl: () => (env("GROQ_BASE_URL") || "https://api.groq.com/openai/v1").replace(/\/+$/, ""), envKey: "GROQ_API_KEY", family: "Qwen on Groq" },
+  openrouter: { baseUrl: () => (env("OPENROUTER_BASE_URL") || "https://openrouter.ai/api/v1").replace(/\/+$/, ""), envKey: "OPENROUTER_API_KEY", family: "Qwen on OpenRouter" },
+  cerebras: { baseUrl: () => (env("CEREBRAS_BASE_URL") || "https://api.cerebras.ai/v1").replace(/\/+$/, ""), envKey: "CEREBRAS_API_KEY", family: "Qwen on Cerebras" },
   evon: { baseUrl: () => (env("EVON_BASE_URL") || "").replace(/\/+$/, ""), envKey: "EVON_API_KEY", family: "Gnani" },
   astraflow: { baseUrl: () => withV1(env("ASTRAFLOW_BASE_URL") || "https://api.umodelverse.ai/v1"), envKey: "ASTRAFLOW_API_KEY", family: "Astraflow" },
   atlas: { baseUrl: () => withV1(env("ATLAS_BASE_URL") || "https://api.atlascloud.ai/v1"), envKey: "ATLAS_API_KEY", family: "Atlas Cloud" },
@@ -62,6 +67,9 @@ type PlaygroundModel = {
 // serve. Order matters — it is the picker order.
 const CATALOG: PlaygroundModel[] = [
   { id: "gnani/gnani-evon-v3.3-30B-A3B", provider: "evon", label: "Evon v3.3 30B", family: "Gnani", note: "Indic MoE, self-hosted", reasoning: true, vision: false, maxOutput: 32768 },
+  { id: "qwen/qwen3-32b", provider: "groq", label: "Qwen3 32B", family: "Qwen on Groq", note: "free tier, fast", reasoning: false, vision: false, maxOutput: 8192 },
+  { id: "qwen/qwen3-235b-a22b:free", provider: "openrouter", label: "Qwen3 235B (free)", family: "Qwen on OpenRouter", note: "free tier", reasoning: true, vision: false, maxOutput: 8192 },
+  { id: "qwen-3-32b", provider: "cerebras", label: "Qwen3 32B", family: "Qwen on Cerebras", note: "free tier, very fast", reasoning: false, vision: false, maxOutput: 8192 },
   { id: "gemini-3.1-flash-lite", provider: "gemini", label: "Gemini 3.1 Flash Lite", family: "Google", note: "free tier", reasoning: false, vision: false, maxOutput: 8192 },
   { id: "gemini-2.5-flash", provider: "gemini", label: "Gemini 2.5 Flash", family: "Google", note: "free tier, vision", reasoning: false, vision: true, maxOutput: 8192 },
   { id: "gemini-2.5-flash-image", provider: "google", label: "Gemini Flash Image", family: "Google", note: "text-to-image, free tier key", reasoning: false, vision: false, maxOutput: 0, image: true },
@@ -95,6 +103,9 @@ const VERIFIED_EXTRA: Partial<Record<ProviderId, Set<string>>> = {
   // Inception lists helper endpoints (e.g. mercury-decide) that chat rejects.
   inception: new Set<string>(),
   gemini: new Set<string>(),
+  groq: new Set<string>(),
+  openrouter: new Set<string>(),
+  cerebras: new Set<string>(),
 };
 
 const DISCOVERY_TTL_MS = 10 * 60 * 1000;
