@@ -705,3 +705,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
 .pg-image figcaption a { display: inline-flex; align-items: center; gap: 4px; color: var(--pg-accent); text-decoration: none; font-weight: 500; }
 .pg-image figcaption a:hover { text-decoration: underline; }
 @media (max-width: 760px) { .pg-image img { max-width: 100%; } }
+
+/* voice: mic in the composer, read-aloud on answers */
+.pg-mic.live { border-color: #ef4444; color: #fecaca; background: #2a1113; animation: pg-pulse 1.2s ease-in-out infinite; }
+.pg-speak { margin-left: auto; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px;
+  border-radius: 999px; border: 1px solid var(--pg-line); background: transparent; color: var(--pg-muted); cursor: pointer; }
+.pg-speak:hover { color: var(--pg-accent); border-color: var(--pg-accent); }
+.pg-speak.live { color: var(--pg-accent); border-color: var(--pg-accent); background: color-mix(in oklab, var(--pg-accent) 14%, transparent); }
+.pg-spin { animation: pg-spin 0.9s linear infinite; }
+@keyframes pg-spin { to { transform: rotate(360deg); } }
+@keyframes pg-pulse { 0%, 100% { box-shadow: 0 0 0 0 #ef444455; } 50% { box-shadow: 0 0 0 6px #ef444400; } }

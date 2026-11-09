@@ -651,8 +651,137 @@ async function handleChat(req: Request, res: Response) {
   }
 }
 
+/* ------------------------------------------------------------------ voice ---
+ * Mic input and read-aloud for the composer, the way ChatGPT does it: the
+ * browser records, normalises to 16 kHz mono WAV (Vachana's STT wants a real
+ * container) and posts the bytes here. Speech never leaves Gnani's API.
+ */
+const vachanaBase = () => (env("VACHANA_BASE_URL") || "https://api.vachana.ai").replace(/\/+$/, "");
+const vachanaKey = () => env("VACHANA_API_KEY") || env("VACHANA_API_KEY_2") || env("GNANI_API_KEY") || "";
+const BROWSER_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36";
+const VOICES = ["Avinash", "Shivani", "Lakshmi", "Kalpana", "Shubham", "Prakash", "Devansh", "Yashraj", "Chetana", "Vasudha"];
+
+function wavFromPcm(pcm: Buffer, sampleRate = 24000, channels = 1) {
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * channels * 2, 28);
+  header.writeUInt16LE(channels * 2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
+
+async function handleStt(req: Request, res: Response) {
+  const key = vachanaKey();
+  if (!key) {
+    res.status(503).json({ error: "Speech-to-text is not configured on this deployment." });
+    return;
+  }
+  const audio = req.body as Buffer;
+  if (!Buffer.isBuffer(audio) || audio.length < 2000) {
+    res.status(400).json({ error: "No audio received. Hold the mic and speak, then release." });
+    return;
+  }
+  if (audio.length > 20 * 1024 * 1024) {
+    res.status(413).json({ error: "Recording too long. Keep it under 20MB (about two minutes)." });
+    return;
+  }
+  const ip = String(req.headers["x-forwarded-for"] || "local").split(",")[0].trim();
+  if (!rateOk(`stt:${ip}`)) {
+    res.status(429).json({ error: "Voice limit reached for this hour. Try again shortly." });
+    return;
+  }
+  const language = String(req.query.language || "hi-IN");
+  const form = new FormData();
+  form.append("audio_file", new Blob([new Uint8Array(audio)], { type: "audio/wav" }), "voice.wav");
+  form.append("language_code", language);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 45000);
+  try {
+    const upstream = await fetch(`${vachanaBase()}/stt/v3`, {
+      method: "POST",
+      headers: { "X-API-Key-ID": key, "user-agent": BROWSER_UA },
+      body: form,
+      signal: controller.signal,
+    });
+    const data = (await upstream.json().catch(() => ({}))) as { transcript?: string; message?: string };
+    if (!upstream.ok) {
+      res.status(502).json({ error: data.message || `Transcription failed (${upstream.status}).` });
+      return;
+    }
+    res.status(200).json({ text: String(data.transcript || "").trim(), language });
+  } catch (error) {
+    res.status(504).json({ error: String((error as Error)?.message || "Transcription timed out.") });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function handleTts(req: Request, res: Response) {
+  const key = vachanaKey();
+  if (!key) {
+    res.status(503).json({ error: "Speech output is not configured on this deployment." });
+    return;
+  }
+  const body = (req.body || {}) as { text?: unknown; language?: unknown; voice?: unknown };
+  const text = String(body.text || "").trim().slice(0, 1200);
+  if (text.length < 2) {
+    res.status(400).json({ error: "Nothing to read out." });
+    return;
+  }
+  const language = String(body.language || "hi");
+  const voice = VOICES.includes(String(body.voice)) ? String(body.voice) : "Avinash";
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 45000);
+  try {
+    const upstream = await fetch(`${vachanaBase()}/api/v1/tts/inference`, {
+      method: "POST",
+      headers: { "X-API-Key-ID": key, "content-type": "application/json", "user-agent": BROWSER_UA },
+      body: JSON.stringify({ text, model: "timbre-v3.0", language, voice }),
+      signal: controller.signal,
+    });
+    if (!upstream.ok) {
+      const detail = await upstream.text().catch(() => "");
+      res.status(502).json({ error: detail.slice(0, 200) || `Speech failed (${upstream.status}).` });
+      return;
+    }
+    // Timbre returns headerless s16le PCM at 24 kHz mono.
+    const wav = wavFromPcm(Buffer.from(await upstream.arrayBuffer()));
+    res.setHeader("content-type", "audio/wav");
+    res.setHeader("cache-control", "no-store");
+    res.status(200).send(wav);
+  } catch (error) {
+    res.status(504).json({ error: String((error as Error)?.message || "Speech timed out.") });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function handleVoiceInfo(_req: Request, res: Response) {
+  res.status(200).json({ enabled: Boolean(vachanaKey()), voices: VOICES, model: "timbre-v3.0", stt: "prisma-v2.5" });
+}
+
 export function registerPlaygroundRoutes(app: Express) {
   app.get("/api/playground/models", handleModels);
   app.post("/api/playground/chat", handleChat);
   app.post("/api/playground/image", handleImage);
+  app.get("/api/playground/voice", handleVoiceInfo);
+  app.post(
+    "/api/playground/stt",
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    require("express").raw({ type: ["audio/wav", "audio/webm", "application/octet-stream"], limit: "20mb" }),
+    handleStt,
+  );
+  app.post("/api/playground/tts", handleTts);
 }

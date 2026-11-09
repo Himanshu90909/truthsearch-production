@@ -12,12 +12,14 @@ import {
   FileText,
   ImagePlus,
   Loader2,
+  Mic,
   Moon,
   SlidersHorizontal,
   Sparkles,
   Square,
   Sun,
   Trash2,
+  Volume2,
   X,
 } from "lucide-react";
 import CameraCapture from "@/components/CameraCapture";
@@ -212,6 +214,9 @@ export default function Playground() {
   const [live, setLive] = useState("");
   const [liveReasoning, setLiveReasoning] = useState("");
   const [notice, setNotice] = useState("");
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [speaking, setSpeaking] = useState<number | null>(null);
   const [cameraOpen, setCameraOpen] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
@@ -362,6 +367,134 @@ export default function Playground() {
   const stop = () => {
     abortRef.current?.abort();
     abortRef.current = null;
+  };
+
+  // Mic: record, normalise to 16 kHz mono WAV (Vachana STT needs a real
+  // container) and drop the transcript straight into the composer.
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const toWav16k = async (blob: Blob): Promise<Blob> => {
+    const ctx = new AudioContext();
+    const decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
+    const rate = 16000;
+    const frames = Math.ceil(decoded.duration * rate);
+    const offline = new OfflineAudioContext(1, frames, rate);
+    const src = offline.createBufferSource();
+    src.buffer = decoded;
+    src.connect(offline.destination);
+    src.start();
+    const rendered = await offline.startRendering();
+    await ctx.close();
+    const samples = rendered.getChannelData(0);
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+    const write = (offset: number, text: string) => {
+      for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
+    };
+    write(0, "RIFF");
+    view.setUint32(4, 36 + samples.length * 2, true);
+    write(8, "WAVE");
+    write(12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, rate, true);
+    view.setUint32(28, rate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    write(36, "data");
+    view.setUint32(40, samples.length * 2, true);
+    let offset = 44;
+    for (let i = 0; i < samples.length; i++, offset += 2) {
+      const v = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(offset, v < 0 ? v * 0x8000 : v * 0x7fff, true);
+    }
+    return new Blob([buffer], { type: "audio/wav" });
+  };
+
+  const uploadVoice = async (blob: Blob) => {
+    setTranscribing(true);
+    try {
+      const wav = await toWav16k(blob);
+      const res = await fetch(`${API_BASE}/api/playground/stt?language=hi-IN`, {
+        method: "POST",
+        headers: { "content-type": "audio/wav" },
+        body: wav,
+      });
+      const data = (await res.json()) as { text?: string; error?: string };
+      if (!res.ok) throw new Error(data.error || "Transcription failed");
+      const text = (data.text || "").trim();
+      if (!text) {
+        setNotice("Kuch sunai nahi diya — dobara boliye.");
+        return;
+      }
+      setInput((prev) => (prev ? `${prev} ${text}` : text));
+      setNotice("Mic transcript composer me aa gaya.");
+      textareaRef.current?.focus();
+    } catch (error) {
+      setNotice((error as Error).message);
+    } finally {
+      setTranscribing(false);
+    }
+  };
+
+  const toggleMic = async () => {
+    if (recording) {
+      recorderRef.current?.stop();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      chunksRef.current = [];
+      const mr = new MediaRecorder(stream);
+      mr.ondataavailable = (event) => {
+        if (event.data.size > 0) chunksRef.current.push(event.data);
+      };
+      mr.onstop = () => {
+        stream.getTracks().forEach((track) => track.stop());
+        setRecording(false);
+        const blob = new Blob(chunksRef.current, { type: mr.mimeType || "audio/webm" });
+        if (blob.size > 2000) void uploadVoice(blob);
+      };
+      mr.start();
+      recorderRef.current = mr;
+      setRecording(true);
+      setNotice("");
+    } catch {
+      setNotice("Mic permission nahi mili. Browser settings me allow kijiye.");
+    }
+  };
+
+  const readAloud = async (text: string, index: number) => {
+    if (!text.trim()) return;
+    if (speaking === index) {
+      audioRef.current?.pause();
+      setSpeaking(null);
+      return;
+    }
+    try {
+      setSpeaking(index);
+      const res = await fetch(`${API_BASE}/api/playground/tts`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: text.slice(0, 1200), language: "hi", voice: "Avinash" }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error((data as { error?: string }).error || "Speech failed");
+      }
+      const url = URL.createObjectURL(await res.blob());
+      const audio = audioRef.current || new Audio();
+      audioRef.current = audio;
+      audio.src = url;
+      audio.onended = () => setSpeaking(null);
+      await audio.play();
+    } catch (error) {
+      setSpeaking(null);
+      setNotice((error as Error).message);
+    }
   };
 
   const send = async (rawText?: string) => {
@@ -721,6 +854,17 @@ export default function Playground() {
                   <div className="pg-answer-meta">
                     <span className="pg-model-chip">{message.model || activeModel?.label || "model"}</span>
                     {message.seconds ? <span className="pg-meta-dim">{message.seconds}s</span> : null}
+                    {!message.error && !message.imageUrl && message.content.trim().length > 8 ? (
+                      <button
+                        type="button"
+                        className={`pg-speak ${speaking === index ? "live" : ""}`}
+                        onClick={() => void readAloud(message.content, index)}
+                        title={speaking === index ? "Stop reading" : "Read this answer aloud (Gnani Timbre)"}
+                        aria-label="Read answer aloud"
+                      >
+                        <Volume2 size={14} />
+                      </button>
+                    ) : null}
                   </div>
                   {message.reasoning && (
                     <details className="pg-reasoning">
@@ -849,6 +993,18 @@ export default function Playground() {
             {!activeModel?.image && (
             <button type="button" className="pg-tool" onClick={() => setCameraOpen(true)} title="Take a photo">
               <CameraIcon size={15} /> <span>Camera</span>
+            </button>
+            )}
+            {!activeModel?.image && (
+            <button
+              type="button"
+              className={`pg-tool pg-mic ${recording ? "live" : ""}`}
+              onClick={() => void toggleMic()}
+              title={recording ? "Stop and transcribe" : "Speak instead of typing"}
+              aria-pressed={recording}
+            >
+              {transcribing ? <Loader2 size={15} className="pg-spin" /> : <Mic size={15} />}
+              <span>{recording ? "Listening…" : transcribing ? "Transcribing…" : "Voice"}</span>
             </button>
             )}
             <span className="pg-composer-hint">
