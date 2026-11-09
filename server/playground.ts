@@ -20,7 +20,7 @@ function withV1(base: string) {
   return /\/v1$/.test(trimmed) ? trimmed : `${trimmed}/v1`;
 }
 
-type ProviderId = "inception" | "nvidia" | "freellm" | "hf" | "astraflow" | "atlas" | "pollinations" | "openai" | "fal" | "google" | "gemini" | "evon" | "groq" | "openrouter" | "cerebras";
+type ProviderId = "inception" | "nvidia" | "freellm" | "hf" | "astraflow" | "atlas" | "pollinations" | "openai" | "fal" | "google" | "gemini" | "evon" | "groq" | "openrouter" | "cerebras" | "qwenlocal";
 
 const PROVIDERS: Record<ProviderId, { baseUrl: () => string; envKey?: string; family: string; chatPath?: string }> = {
   inception: { baseUrl: () => withV1(env("INCEPTION_BASE_URL") || "https://api.inceptionlabs.ai/v1"), envKey: "INCEPTION_API_KEY", family: "Inception Labs" },
@@ -43,6 +43,10 @@ const PROVIDERS: Record<ProviderId, { baseUrl: () => string; envKey?: string; fa
   // on Modal or an HF Inference Endpoint) is pointed at by EVON_BASE_URL.
   // Free-tier gateways that actually serve Qwen. Each lights up the moment its
   // key exists, so adding one account adds the whole Qwen family to the picker.
+  // Qwen3.8-27B ships as open weights with no hosted inference provider, so it
+  // appears only once a self-hosted OpenAI-compatible endpoint (vLLM on Modal or
+  // an HF Inference Endpoint) is pointed at by QWEN_LOCAL_BASE_URL.
+  qwenlocal: { baseUrl: () => (env("QWEN_LOCAL_BASE_URL") || "").replace(/\/+$/, ""), envKey: "QWEN_LOCAL_API_KEY", family: "Qwen (self-hosted)" },
   groq: { baseUrl: () => (env("GROQ_BASE_URL") || "https://api.groq.com/openai/v1").replace(/\/+$/, ""), envKey: "GROQ_API_KEY", family: "Qwen on Groq" },
   openrouter: { baseUrl: () => (env("OPENROUTER_BASE_URL") || "https://openrouter.ai/api/v1").replace(/\/+$/, ""), envKey: "OPENROUTER_API_KEY", family: "Qwen on OpenRouter" },
   cerebras: { baseUrl: () => (env("CEREBRAS_BASE_URL") || "https://api.cerebras.ai/v1").replace(/\/+$/, ""), envKey: "CEREBRAS_API_KEY", family: "Qwen on Cerebras" },
@@ -67,6 +71,7 @@ type PlaygroundModel = {
 // serve. Order matters — it is the picker order.
 const CATALOG: PlaygroundModel[] = [
   { id: "gnani/gnani-evon-v3.3-30B-A3B", provider: "evon", label: "Evon v3.3 30B", family: "Gnani", note: "Indic MoE, self-hosted", reasoning: true, vision: false, maxOutput: 32768 },
+  { id: "Qwen/Qwen3.8-27B", provider: "qwenlocal", label: "Qwen3.8 27B", family: "Qwen (self-hosted)", note: "27B, multimodal vision", reasoning: true, vision: true, maxOutput: 16384 },
   { id: "qwen/qwen3-32b", provider: "groq", label: "Qwen3 32B", family: "Qwen on Groq", note: "free tier, fast", reasoning: false, vision: false, maxOutput: 8192 },
   { id: "qwen/qwen3-235b-a22b:free", provider: "openrouter", label: "Qwen3 235B (free)", family: "Qwen on OpenRouter", note: "free tier", reasoning: true, vision: false, maxOutput: 8192 },
   { id: "qwen-3-32b", provider: "cerebras", label: "Qwen3 32B", family: "Qwen on Cerebras", note: "free tier, very fast", reasoning: false, vision: false, maxOutput: 8192 },
@@ -286,6 +291,7 @@ async function imageModelUsable(provider: ProviderId, key: string): Promise<bool
 function providerAvailable(provider: ProviderId) {
   const keyName = PROVIDERS[provider].envKey;
   if (provider === "evon") return Boolean(env("EVON_BASE_URL") && env("EVON_API_KEY"));
+  if (provider === "qwenlocal") return Boolean(env("QWEN_LOCAL_BASE_URL"));
   return keyName ? Boolean(env(keyName)) : true;
 }
 
