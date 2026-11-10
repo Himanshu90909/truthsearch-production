@@ -995,7 +995,16 @@ export default function Playground() {
               <CameraIcon size={15} /> <span>Camera</span>
             </button>
             )}
-            {!activeModel?.image && (
+            {activeModel?.image && (
+              <button
+                type="button"
+                className="pg-tool-note"
+                onClick={() => setPickerOpen(true)}
+                title="Photo, Doc and Camera belong to chat models. Open the picker to switch."
+              >
+                <ImagePlus size={13} /> <span>Text-to-image · switch to a chat model to attach photos, docs or use the camera</span>
+              </button>
+            )}
             <button
               type="button"
               className={`pg-tool pg-mic ${recording ? "live" : ""}`}
@@ -1006,7 +1015,6 @@ export default function Playground() {
               {transcribing ? <Loader2 size={15} className="pg-spin" /> : <Mic size={15} />}
               <span>{recording ? "Listening…" : transcribing ? "Transcribing…" : "Voice"}</span>
             </button>
-            )}
             <span className="pg-composer-hint">
               {activeModel?.image ? `${activeModel.family} · text-to-image` : activeModel ? `${settings.temperature.toFixed(2)} temp · ${settings.maxTokens} tokens` : ""}
             </span>

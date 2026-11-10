@@ -664,6 +664,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
 .pg-composer-row { display: flex; align-items: center; gap: 6px; padding-top: 4px; }
 .pg-tool { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 9px; border: 1px solid var(--pg-line); border-radius: 8px; background: var(--pg-raised); color: var(--pg-muted); font-size: 12px; cursor: pointer; }
 .pg-tool:hover { color: var(--pg-ink); border-color: var(--pg-muted); }
+.pg-tool-note { display: inline-flex; align-items: center; gap: 5px; min-width: 0; height: 28px; padding: 0 9px; border: 1px dashed var(--pg-line); border-radius: 8px; background: none; font-size: 11.5px; color: var(--pg-muted); cursor: pointer; }
+.pg-tool-note:hover { color: var(--pg-ink); border-color: var(--pg-muted); }
+.pg-tool-note svg { flex: 0 0 auto; }
+.pg-tool-note span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pg-composer-hint { margin-left: auto; font: 500 10px 'JetBrains Mono', monospace; color: var(--pg-faint); text-transform: uppercase; letter-spacing: .08em; }
 .pg-send { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 13px; border: 0; border-radius: 10px; background: #0F0F0F; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; }
 .pg-send:hover:not(:disabled) { background: #2E2E2E; }
@@ -683,6 +687,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
   .pg-tool span { display: none; }
   .pg-tool { padding: 0 8px; }
   .pg-composer-hint { display: none; }
+  .pg-tool-note { font-size: 10.5px; max-width: 44vw; }
   .pg-send { margin-left: auto; }
   .pg-bubble { max-width: 90%; }
   .pg-picker { width: calc(100vw - 24px); right: auto; left: 0; }
