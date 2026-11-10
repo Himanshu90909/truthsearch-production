@@ -79,9 +79,19 @@ const CATALOG: PlaygroundModel[] = [
   { id: "qwen/qwen3-32b", provider: "groq", label: "Qwen3 32B", family: "Qwen on Groq", note: "free tier, fast", reasoning: false, vision: false, maxOutput: 8192 },
   { id: "qwen/qwen3-235b-a22b:free", provider: "openrouter", label: "Qwen3 235B (free)", family: "Qwen on OpenRouter", note: "free tier", reasoning: true, vision: false, maxOutput: 8192 },
   { id: "qwen-3-32b", provider: "cerebras", label: "Qwen3 32B", family: "Qwen on Cerebras", note: "free tier, very fast", reasoning: false, vision: false, maxOutput: 8192 },
+  // Every Muse id this key can actually chat on (probed 2026-11-10): 7 of the
+  // 10 advertised. sam-3.1, muse-image-1.0 and muse-voice-transcribe-1.0 only
+  // answer on /v1/responses or their own endpoints, so they are not offered.
   { id: "muse-wonder-1.0", provider: "metaapi", label: "Muse Wonder", family: "Meta Model API", note: "preview flagship, 1M context, vision", reasoning: true, vision: true, maxOutput: 32768 },
   { id: "muse-spark-1.3", provider: "metaapi", label: "Muse Spark 1.3", family: "Meta Model API", note: "agentic and coding, 1M context, vision", reasoning: true, vision: true, maxOutput: 32768 },
+  { id: "muse-spark-1.2", provider: "metaapi", label: "Muse Spark 1.2", family: "Meta Model API", note: "previous release, 1M context, vision", reasoning: true, vision: true, maxOutput: 32768 },
+  { id: "muse-spark-1.1", provider: "metaapi", label: "Muse Spark 1.1", family: "Meta Model API", note: "older release, cheap", reasoning: true, vision: true, maxOutput: 16384 },
   { id: "muse-ember-1.0", provider: "metaapi", label: "Muse Ember", family: "Meta Model API", note: "cheap high-volume work, vision", reasoning: true, vision: true, maxOutput: 16384 },
+  // Contributor variants are ~10-20x cheaper because Meta may train on the
+  // request data. Labelled so the trade is visible in the picker.
+  { id: "muse-spark-1.3-contributor", provider: "metaapi", label: "Muse Spark 1.3 Contributor", family: "Meta Model API", note: "cheapest: Meta may train on your prompts", reasoning: true, vision: true, maxOutput: 32768 },
+  { id: "muse-spark-1.2-contributor", provider: "metaapi", label: "Muse Spark 1.2 Contributor", family: "Meta Model API", note: "cheapest: Meta may train on your prompts", reasoning: true, vision: true, maxOutput: 32768 },
+  { id: "muse-image-1.0", provider: "metaapi", label: "Muse Image", family: "Meta Model API", note: "text-to-image, Meta Model API", reasoning: false, vision: false, maxOutput: 0, image: true },
   { id: "gemini-3.1-flash-lite", provider: "gemini", label: "Gemini 3.1 Flash Lite", family: "Google", note: "free tier", reasoning: false, vision: false, maxOutput: 8192 },
   { id: "gemini-2.5-flash", provider: "gemini", label: "Gemini 2.5 Flash", family: "Google", note: "free tier, vision", reasoning: false, vision: true, maxOutput: 8192 },
   { id: "gemini-2.5-flash-image", provider: "google", label: "Gemini Flash Image", family: "Google", note: "text-to-image, free tier key", reasoning: false, vision: false, maxOutput: 0, image: true },
@@ -483,6 +493,26 @@ async function handleImage(req: Request, res: Response) {
       const part = payload.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data);
       const data = part?.inlineData?.data;
       if (data) url = `data:${part?.inlineData?.mimeType || "image/png"};base64,${data}`;
+    } else if (model.provider === "metaapi") {
+      // Muse Image lives on the Responses API and answers with a base64 image
+      // item (usually WebP), so the bytes are wrapped into a data URL here.
+      const upstream = await fetch(`${provider.baseUrl()}/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ model: model.id, input: prompt }),
+        signal: controller.signal,
+      });
+      const payload = (await upstream.json().catch(() => ({}))) as {
+        output?: Array<{ type?: string; result?: string }>;
+        error?: { message?: string };
+      };
+      if (!upstream.ok) throw new Error(payload.error?.message || `${model.label} returned ${upstream.status}`);
+      const b64 = (payload.output || []).find((item) => item.type === "image_generation_call" && item.result)?.result || "";
+      if (b64) {
+        const head = b64.slice(0, 8);
+        const mime = head.startsWith("UklGR") ? "image/webp" : head.startsWith("/9j/") ? "image/jpeg" : "image/png";
+        url = `data:${mime};base64,${b64}`;
+      }
     } else if (model.provider === "fal") {
       const upstream = await fetch(`${provider.baseUrl()}/${model.id}`, {
         method: "POST",
