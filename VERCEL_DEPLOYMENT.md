@@ -21,6 +21,7 @@ The deployed Vercel project must be publicly reachable for browser API calls. Th
 | Optional backend configuration | `MAX_SEARCH_QUERIES`, `MAX_SOURCES`, `RESEARCH_TIMEOUT_MS`, `MAX_RESEARCH_ROUNDS` | Bound request cost, time, and scope. |
 | Optional paid backend adapters | `ENABLE_PAID_SEARCH=true`, `SEARCH_PROVIDER=brave` or `tavily`, plus the matching provider key | Paid search only when explicitly enabled. |
 | Synthesis model (required for answers) | `HF_API_KEY` | Hugging Face token for the single fixed backend: `meta-models/Muse-Glimmer-30B` via Inference Providers. Missing key fails explicitly; no fallback and no fabricated answers. |
+| Playground: Meta Model API | `META_API_KEY` (key form `LLM|<app id>|<secret>`, pipes included), optional `META_API_BASE_URL` (default `https://api.meta.ai/v1`) | Adds Muse Wonder, Muse Spark 1.3 and Muse Ember to the model picker. The key must be set with its literal pipe characters; without it the three models stay hidden. |
 | Vercel frontend | `VITE_OAUTH_PORTAL_URL`, `VITE_APP_ID` | Public client configuration referenced directly by the browser bundle. |
 | Optional split frontend | `VITE_API_ORIGIN` | Explicit backend origin override; leave unset on the current Vercel host to use the built-in managed-backend fallback. |
 
