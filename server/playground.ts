@@ -20,7 +20,7 @@ function withV1(base: string) {
   return /\/v1$/.test(trimmed) ? trimmed : `${trimmed}/v1`;
 }
 
-type ProviderId = "inception" | "nvidia" | "freellm" | "hf" | "astraflow" | "atlas" | "pollinations" | "openai" | "fal" | "google" | "gemini" | "evon" | "groq" | "openrouter" | "cerebras" | "qwenlocal";
+type ProviderId = "inception" | "nvidia" | "freellm" | "hf" | "astraflow" | "atlas" | "pollinations" | "openai" | "fal" | "google" | "gemini" | "evon" | "groq" | "openrouter" | "cerebras" | "qwenlocal" | "metaapi";
 
 const PROVIDERS: Record<ProviderId, { baseUrl: () => string; envKey?: string; family: string; chatPath?: string }> = {
   inception: { baseUrl: () => withV1(env("INCEPTION_BASE_URL") || "https://api.inceptionlabs.ai/v1"), envKey: "INCEPTION_API_KEY", family: "Inception Labs" },
@@ -51,6 +51,10 @@ const PROVIDERS: Record<ProviderId, { baseUrl: () => string; envKey?: string; fa
   openrouter: { baseUrl: () => (env("OPENROUTER_BASE_URL") || "https://openrouter.ai/api/v1").replace(/\/+$/, ""), envKey: "OPENROUTER_API_KEY", family: "Qwen on OpenRouter" },
   cerebras: { baseUrl: () => (env("CEREBRAS_BASE_URL") || "https://api.cerebras.ai/v1").replace(/\/+$/, ""), envKey: "CEREBRAS_API_KEY", family: "Qwen on Cerebras" },
   evon: { baseUrl: () => (env("EVON_BASE_URL") || "").replace(/\/+$/, ""), envKey: "EVON_API_KEY", family: "Gnani" },
+  // Meta Model API (the Llama API successor): Muse Wonder, Muse Spark and Muse
+  // Ember behind one OpenAI-compatible surface at api.meta.ai. Keys are the
+  // "LLM|<app id>|<secret>" form, so the whole key goes in META_API_KEY as-is.
+  metaapi: { baseUrl: () => withV1(env("META_API_BASE_URL") || "https://api.meta.ai/v1"), envKey: "META_API_KEY", family: "Meta Model API" },
   astraflow: { baseUrl: () => withV1(env("ASTRAFLOW_BASE_URL") || "https://api.umodelverse.ai/v1"), envKey: "ASTRAFLOW_API_KEY", family: "Astraflow" },
   atlas: { baseUrl: () => withV1(env("ATLAS_BASE_URL") || "https://api.atlascloud.ai/v1"), envKey: "ATLAS_API_KEY", family: "Atlas Cloud" },
 };
@@ -75,6 +79,9 @@ const CATALOG: PlaygroundModel[] = [
   { id: "qwen/qwen3-32b", provider: "groq", label: "Qwen3 32B", family: "Qwen on Groq", note: "free tier, fast", reasoning: false, vision: false, maxOutput: 8192 },
   { id: "qwen/qwen3-235b-a22b:free", provider: "openrouter", label: "Qwen3 235B (free)", family: "Qwen on OpenRouter", note: "free tier", reasoning: true, vision: false, maxOutput: 8192 },
   { id: "qwen-3-32b", provider: "cerebras", label: "Qwen3 32B", family: "Qwen on Cerebras", note: "free tier, very fast", reasoning: false, vision: false, maxOutput: 8192 },
+  { id: "muse-wonder-1.0", provider: "metaapi", label: "Muse Wonder", family: "Meta Model API", note: "preview flagship, 1M context, vision", reasoning: true, vision: true, maxOutput: 32768 },
+  { id: "muse-spark-1.3", provider: "metaapi", label: "Muse Spark 1.3", family: "Meta Model API", note: "agentic and coding, 1M context, vision", reasoning: true, vision: true, maxOutput: 32768 },
+  { id: "muse-ember-1.0", provider: "metaapi", label: "Muse Ember", family: "Meta Model API", note: "cheap high-volume work, vision", reasoning: true, vision: true, maxOutput: 16384 },
   { id: "gemini-3.1-flash-lite", provider: "gemini", label: "Gemini 3.1 Flash Lite", family: "Google", note: "free tier", reasoning: false, vision: false, maxOutput: 8192 },
   { id: "gemini-2.5-flash", provider: "gemini", label: "Gemini 2.5 Flash", family: "Google", note: "free tier, vision", reasoning: false, vision: true, maxOutput: 8192 },
   { id: "gemini-2.5-flash-image", provider: "google", label: "Gemini Flash Image", family: "Google", note: "text-to-image, free tier key", reasoning: false, vision: false, maxOutput: 0, image: true },
@@ -111,6 +118,9 @@ const VERIFIED_EXTRA: Partial<Record<ProviderId, Set<string>>> = {
   groq: new Set<string>(),
   openrouter: new Set<string>(),
   cerebras: new Set<string>(),
+  // Meta also lists sam-3.1, muse-image and muse-voice-transcribe, which are not
+  // chat models, so only the hand-curated Muse set is offered here.
+  metaapi: new Set<string>(),
 };
 
 const DISCOVERY_TTL_MS = 10 * 60 * 1000;
