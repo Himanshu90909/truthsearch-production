@@ -230,6 +230,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
 .claim-status.verified { color: #20808D; }
 .claim-status.partial { color: #B98A2E; }
 .claim-status.conflicting { color: #D64545; }
+.claim-status.unsupported, .claim-status.insufficient { color: #7A7F87; }
+.claim-status.outdated { color: #8A6D3B; }
+.claims-summary { font-size: 12.5px; color: var(--muted-foreground, #666); margin: 0 0 10px; line-height: 1.5; }
+.claim-detail blockquote { margin: 6px 0; padding: 6px 10px; border-left: 3px solid #20808D; font-size: 12.5px; background: rgba(32,128,141,.05); }
+.claim-detail blockquote.against { border-left-color: #D64545; background: rgba(214,69,69,.05); }
 .claim-status.insufficient { color: #8A8A8A; }
 .app.dark .claim-status.verified { color: #20B8CD; }
 .claim-detail { margin: 0 16px 16px 88px; padding: 14px; border-left: 2px solid #20808D; background: #F7FBFB; color: #3D3D3D; font-size: 12.5px; line-height: 1.65; border-radius: 0 10px 10px 0; }

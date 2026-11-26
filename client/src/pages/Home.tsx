@@ -53,7 +53,8 @@ type Source = { id: number; title: string; url: string; canonicalUrl?: string; d
 type Evidence = { quote?: string; url?: string; title?: string; supportScore?: number; qualityScore?: number; claim?: string };
 type Conflict = { description: string; supporting?: Array<{ url?: string; title?: string }>; contradicting?: Array<{ url?: string; title?: string }> };
 type ResearchMode = "quick" | "deep" | "academic" | "verify" | "image";
-type ClaimStatus = "verified" | "partial" | "conflicting" | "insufficient";
+type ClaimStatus = "verified" | "partial" | "conflicting" | "unsupported" | "outdated" | "insufficient";
+type ClaimRow = { id: number; claim: string; confidence: number; status?: ClaimStatus | null; explanation?: string | null; verificationStatus?: string };
 const modes: Array<{ id: ResearchMode; label: string; hint: string }> = [
   { id: "quick", label: "Quick search", hint: "Fast multi-source answer" },
   { id: "deep", label: "Deep research", hint: "More queries, more sources" },
@@ -61,7 +62,10 @@ const modes: Array<{ id: ResearchMode; label: string; hint: string }> = [
   { id: "verify", label: "Verify a claim", hint: "Fact-check with a verdict" },
   { id: "image", label: "Generate image", hint: "Create a picture from a prompt" },
 ];
-const statusLabels: Record<ClaimStatus, string> = { verified: "Verified", partial: "Partially supported", conflicting: "Conflicting evidence", insufficient: "Insufficient evidence" };
+const statusLabels: Record<ClaimStatus, string> = { verified: "Verified", partial: "Partially supported", conflicting: "Conflicting", unsupported: "Unsupported", outdated: "Possibly outdated", insufficient: "Insufficient evidence" };
+// Never show a claim as verified unless the server said so. Old sessions without a 5-state status map conservatively.
+const LEGACY_TO_STATUS: Record<string, ClaimStatus> = { verified: "partial", mixed: "partial", unsupported: "unsupported" };
+const statusOf = (c: ClaimRow): ClaimStatus => (c.status as ClaimStatus) || LEGACY_TO_STATUS[c.verificationStatus || ""] || "unsupported";
 type Attachment = { id: string; file: File; preview?: string; error?: string };
 
 function fileToDataUrl(file: File): Promise<string> { return new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result)); r.onerror = () => reject(new Error("We couldn't read that file. Try another file.")); r.readAsDataURL(file); }); }
@@ -170,7 +174,13 @@ export default function Home() {
   const rankedSources = rlRank(sources);
   const rankedEvidence = rlRank(evidence as unknown as { domain?: string; qualityScore?: number }[]) as unknown as Evidence[];
   const conflicts = (data?.session?.plan?.conflicts || []) as Conflict[];
-  const claimStatuses = ((data?.session?.plan?.claimStatuses as ClaimStatus[] | undefined) || evidence.map(() => "verified" as ClaimStatus));
+  const claimStatuses = ((data?.session?.plan?.claimStatuses as ClaimStatus[] | undefined) || evidence.map(() => "unsupported" as ClaimStatus));
+  const claimRows = ((data?.claims || []) as ClaimRow[]).filter((c) => c.status); // rows produced by the claim engine
+  const evidenceByClaim = new Map<number, Array<{ exactQuote: string; supportScore: number; passageId: number }>>();
+  for (const e of (data?.evidence || []) as Array<{ claimId: number; exactQuote: string; supportScore: number; passageId: number }>) { if (!evidenceByClaim.has(e.claimId)) evidenceByClaim.set(e.claimId, []); evidenceByClaim.get(e.claimId)!.push(e); }
+  const contradictionsByClaim = new Map<number, string[]>();
+  for (const c of (data?.contradictions || []) as Array<{ claimId: number; description: string }>) { if (!contradictionsByClaim.has(c.claimId)) contradictionsByClaim.set(c.claimId, []); contradictionsByClaim.get(c.claimId)!.push(c.description); }
+  const claimCounts = claimRows.reduce((acc, c) => { const st = statusOf(c); acc[st] = (acc[st] || 0) + 1; return acc; }, {} as Partial<Record<ClaimStatus, number>>);
   const latestProgress = data?.messages?.filter((m: any) => m.role === "system").at(-1)?.content || "Ready for a question";
   const activeStage = Math.max(0, stages.findIndex((s) => latestProgress.toLowerCase().includes(s)));
 
@@ -330,7 +340,7 @@ export default function Home() {
     const audit = sessionData.plan?.citationAudit as { citationCoverage?: number; invalidReferences?: number[] } | undefined;
     const provenance = sessionData.plan?.answerProvenance as string | undefined;
     const modeLabel = (sessionData.plan?.modeLabel as string) || "Quick search";
-    const claimRows = evidence.map((item, i) => `<li><strong>[${i + 1}] ${escapeHtml(statusLabels[claimStatuses[i] || "verified"])}</strong> — ${escapeHtml(String(item.claim || item.quote || "").slice(0, 300))}<br/><small>Source: ${escapeHtml(String(item.title || ""))} — ${escapeHtml(String(item.url || ""))}</small></li>`).join("");
+    const claimRows = evidence.map((item, i) => `<li><strong>[${i + 1}] ${escapeHtml(statusLabels[claimStatuses[i] || "unsupported"])}</strong> — ${escapeHtml(String(item.claim || item.quote || "").slice(0, 300))}<br/><small>Source: ${escapeHtml(String(item.title || ""))} — ${escapeHtml(String(item.url || ""))}</small></li>`).join("");
     const sourceRows = sources.map((src) => `<li>${escapeHtml(src.title)} — ${escapeHtml(src.domain)} (quality ${src.qualityScore}/100)<br/><small>${escapeHtml(src.url)}</small></li>`).join("");
     const conflictRows = conflicts.map((c) => `<p>${escapeHtml(c.description)}</p>`).join("");
     const html = `<!doctype html><html><head><meta charset="utf-8"><title>TruthSearch Research Report</title><style>
@@ -400,7 +410,11 @@ export default function Home() {
               {feedback === "down" && <span className="text-xs opacity-70">Saved — these sources will rank lower next time.</span>}
             </div>}
         {data?.session?.answer && <div className="section-heading"><div><div className="eyebrow">Claim-level verification</div><h2>What the evidence says</h2></div><span>{(() => { const sum = data?.session?.plan?.claimSummary as { verified: number; partial: number; conflicting: number } | undefined; return sum ? `${sum.verified} verified · ${sum.partial} partial · ${sum.conflicting} conflicting` : `${evidence.length} verified passages`; })()}</span></div>}
-        {data?.session?.answer && <div className="claims">{rankedEvidence.slice(0, 5).map((item, i) => { const status = claimStatuses[i] || "verified"; return <details key={`${item.title}-${i}`}><summary><span className={`claim-status ${status}`}>{status === "verified" ? <Check size={13} /> : status === "conflicting" ? <CircleAlert size={13} /> : <FlaskConical size={13} />}{statusLabels[status]}</span><span>{item.claim || item.quote}</span><ChevronDown size={16} /></summary><div className="claim-detail"><strong>Claim #{i + 1}</strong><p>{item.quote}</p><span>{status === "verified" ? "Supported by a verified passage" : status === "partial" ? "Supported with partial evidence" : status === "conflicting" ? "Sources disagree on this claim" : "Not enough evidence"} · {item.supportScore || item.qualityScore || confidence}% confidence</span></div></details>; })}</div>}
+        {data?.session?.answer && claimRows.length > 0 && <div className="claims" aria-label="Claim verification">
+          <p className="claims-summary">{(["verified", "partial", "conflicting", "outdated", "unsupported"] as ClaimStatus[]).filter((k) => claimCounts[k]).map((k) => `${claimCounts[k]} ${statusLabels[k].toLowerCase()}`).join(" · ")}. A claim is verified only when at least two independent websites support it and none credibly contradict it.</p>
+          {claimRows.map((c) => { const status = statusOf(c); const support = evidenceByClaim.get(c.id) || []; const against = contradictionsByClaim.get(c.id) || []; return <details key={c.id}><summary><span className={`claim-status ${status}`}>{status === "verified" ? <Check size={13} /> : status === "conflicting" ? <CircleAlert size={13} /> : <FlaskConical size={13} />}{statusLabels[status]}</span><span>{c.claim}</span><ChevronDown size={16} /></summary><div className="claim-detail"><p>{c.explanation || "No explanation recorded."}</p>{support.length > 0 && <><strong>Supporting passages</strong>{support.map((e, j) => <blockquote key={j}>{e.exactQuote.slice(0, 420)}</blockquote>)}</>}{against.length > 0 && <><strong>Contradicting passages</strong>{against.map((d, j) => <blockquote key={j} className="against">{d}</blockquote>)}</>}<span>{c.confidence}% evidence confidence</span></div></details>; })}
+        </div>}
+        {data?.session?.answer && claimRows.length === 0 && <div className="claims">{rankedEvidence.slice(0, 5).map((item, i) => { const status = claimStatuses[i] || "unsupported"; return <details key={`${item.title}-${i}`}><summary><span className={`claim-status ${status}`}>{status === "verified" ? <Check size={13} /> : status === "conflicting" ? <CircleAlert size={13} /> : <FlaskConical size={13} />}{statusLabels[status]}</span><span>{item.claim || item.quote}</span><ChevronDown size={16} /></summary><div className="claim-detail"><strong>Passage #{i + 1}</strong><p>{item.quote}</p><span>Older session: shown as retrieved evidence, not independently verified.</span></div></details>; })}</div>}
         {conflicts.length > 0 && <div className="conflict-card"><div className="conflict-title"><CircleAlert size={18} /><div><div className="eyebrow">Conflicting evidence</div><h2>Sources disagree</h2></div></div><p>{conflicts[0].description}</p><div className="conflict-columns"><div><strong>Supporting</strong>{(conflicts[0].supporting || []).map((x, i) => <span key={i}><Check size={13} />{x.title || x.url}</span>)}</div><div><strong>Contradicting</strong>{(conflicts[0].contradicting || []).map((x, i) => <span key={i}><CircleAlert size={13} />{x.title || x.url}</span>)}</div></div></div>}
         {sources.length > 0 ? <section className="evidence-section"><div className="section-heading"><div><div className="eyebrow">Evidence library</div><h2>Sources behind the answer</h2></div><span>{sources.length} sources</span></div><div className="evidence-grid">{sources.map((source, i) => { const item = evidence.find((e) => e.url === source.canonicalUrl || e.url === source.url || e.title === source.title); return <article className="evidence-card" key={source.id}><div className="source-meta"><span>{source.sourceType}</span><Quality score={source.qualityScore} onClick={() => setSelectedSource(source)} /></div><h3>{source.title}</h3><p className="domain">{source.domain}{source.publicationDate ? ` · ${source.publicationDate}` : ""}</p>{item?.quote && <blockquote>{item.quote}</blockquote>}<div className="card-actions"><button onClick={() => setSelectedSource(source)}><FileText size={14} /> Inspect evidence</button><a href={source.url} target="_blank" rel="noreferrer">Open source <ArrowUpRight size={14} /></a><button aria-label="Copy citation" onClick={() => navigator.clipboard?.writeText(`${source.title} — ${source.url}`)}><Clipboard size={14} /></button></div></article>; })}</div></section> : data?.session?.status !== "failed" && <div className="empty-state"><Loader2 className="spin" size={22} /><h2>Researching in the open</h2><p>{latestProgress}</p></div>}
         {data?.session?.answer && <div className="trace-wrap"><button className="trace-toggle" onClick={() => setShowTrace(!showTrace)}><GitBranch size={16} />View research process<ChevronDown className={showTrace ? "rotate" : ""} size={16} /></button>{showTrace && <div className="trace"><span>Question</span><span>Research plan</span><span>Search queries</span><span>Sources found</span><span>Evidence extracted</span><span>Claim verification</span><span>Final answer</span></div>}</div>}

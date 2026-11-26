@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/neon-http";
 import { neon } from "@neondatabase/serverless";
-import { InsertUser, users, researchSessions, researchMessages, researchQueries, researchSources, researchPassages, researchClaims, researchEvidence, researchCitations, localSessions, collections, analyticsEvents, researchFeedback } from "../drizzle/schema";
+import { InsertUser, users, researchSessions, researchMessages, researchQueries, researchSources, researchPassages, researchClaims, researchEvidence, researchCitations, researchContradictions, localSessions, collections, analyticsEvents, researchFeedback } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 import { SESSION_TTL_MS, newSessionToken } from "./auth-local";
 
@@ -46,7 +46,7 @@ const TABLE_COLUMNS: Record<string, string[]> = {
   research_queries: ["id", "sessionId", "query", "provider", "status", "resultCount", "createdAt"],
   research_sources: ["id", "sessionId", "queryId", "url", "canonicalUrl", "title", "domain", "author", "publicationDate", "sourceType", "qualityScore", "content", "retrievedAt"],
   research_passages: ["id", "sourceId", "passageIndex", "text", "tokenCount", "bm25Score", "denseScore", "fusedScore", "rerankScore"],
-  research_claims: ["id", "sessionId", "claim", "confidence", "verificationStatus"],
+  research_claims: ["id", "sessionId", "claim", "confidence", "verificationStatus"], // status/explanation are added by ALTER TABLE and intentionally not required here
   research_evidence: ["id", "claimId", "passageId", "supportScore", "exactQuote"],
   research_contradictions: ["id", "sessionId", "claimId", "description", "sourceIds"],
   research_citations: ["id", "claimId", "sourceId", "verified"],
@@ -149,7 +149,7 @@ type MemSession = { id: number; title: string; question: string; userId: number 
 type MemMessage = { id: number; sessionId: number; role: "user" | "assistant" | "system"; content: string; createdAt: Date };
 type MemQuery = { id: number; sessionId: number; query: string; provider: string; status: "planned" | "searched" | "failed"; resultCount: number; createdAt: Date };
 type MemSource = { id: number; sessionId: number; url: string; canonicalUrl: string | null; title: string | null; domain: string | null; author: string | null; publicationDate: string | null; sourceType: string | null; qualityScore: number | null; content: string | null };
-type MemClaim = { id: number; sessionId: number; claim: string; confidence: number; verificationStatus: "verified" | "mixed" | "unsupported" };
+type MemClaim = { id: number; sessionId: number; claim: string; confidence: number; verificationStatus: "verified" | "mixed" | "unsupported"; status?: string; explanation?: string | null };
 type MemEvidence = { id: number; claimId: number; passageId: number; exactQuote: string; supportScore: number };
 
 const mem = {
@@ -197,7 +197,21 @@ export async function addSource(sessionId: number, source: any) {
 export function matchPassageId(passages: string[], quote: string, ids: number[]) { const index = passages.findIndex((passage) => passage === quote); return index >= 0 ? ids[index] || 0 : 0; }
 export function buildVerifiedLink(passages: string[], quote: string, passageRowIds: number[], sourceRowId: number, claimRowId: number) { const passageId = matchPassageId(passages, quote, passageRowIds); return passageId && sourceRowId && claimRowId ? { evidence: { claimId: claimRowId, passageId, exactQuote: quote }, citation: { claimId: claimRowId, sourceId: sourceRowId, verified: 1 } } : null; }
 export async function addPassage(sourceId: number, passageIndex: number, text: string) { const db = await getDb(); if (!db) { const id = memId(); mem.passages.push({ id, sourceId, passageIndex, text, tokenCount: text.split(/\s+/).length }); return id; } const result = await db.insert(researchPassages).values({ sourceId, passageIndex, text, tokenCount: text.split(/\s+/).length }).returning({ id: researchPassages.id }); return Number(result[0].id); }
-export async function addClaim(sessionId: number, claim: string, confidence: number, status: "verified" | "mixed" | "unsupported") { const db = await getDb(); if (!db) { const id = memId(); mem.claims.push({ id, sessionId, claim, confidence, verificationStatus: status }); return id; } const result = await db.insert(researchClaims).values({ sessionId, claim, confidence: Math.round(confidence), verificationStatus: status }).returning({ id: researchClaims.id }); return Number(result[0].id); }
+import type { ClaimStatus } from "./verification/claims";
+// Legacy enum (verified/mixed/unsupported) is kept valid for old readers; the real 5-state status lives in `status`.
+const LEGACY_STATUS: Record<ClaimStatus, "verified" | "mixed" | "unsupported"> = { verified: "verified", partial: "mixed", conflicting: "mixed", outdated: "mixed", unsupported: "unsupported" };
+export async function addClaim(sessionId: number, claim: string, confidence: number, status: ClaimStatus, explanation?: string | null) {
+  const db = await getDb();
+  if (!db) { const id = memId(); mem.claims.push({ id, sessionId, claim, confidence, verificationStatus: LEGACY_STATUS[status], status, explanation: explanation ?? null }); return id; }
+  const result = await db.insert(researchClaims).values({ sessionId, claim, confidence: Math.round(confidence), verificationStatus: LEGACY_STATUS[status] }).returning({ id: researchClaims.id });
+  const id = result[0].id;
+  try { await db.execute(sql`UPDATE "research_claims" SET "status" = ${status}, "explanation" = ${explanation ?? null} WHERE "id" = ${id}`); } catch (error) { console.warn("[Claims] status update failed:", String(error).slice(0, 120)); }
+  return id;
+}
+export async function addContradiction(sessionId: number, claimId: number, description: string, sourceIds: number[]) {
+  const db = await getDb(); if (!db) return;
+  try { await db.insert(researchContradictions).values({ sessionId, claimId, description: description.slice(0, 1000), sourceIds }); } catch (error) { console.warn("[Claims] contradiction save failed:", String(error).slice(0, 120)); }
+}
 export async function addEvidence(claimId: number, passageId: number, quote: string, supportScore: number) { const db = await getDb(); if (!db) { mem.evidence.push({ id: memId(), claimId, passageId, exactQuote: quote, supportScore }); return; } await db.insert(researchEvidence).values({ claimId, passageId, exactQuote: quote, supportScore: Math.round(supportScore) }); }
 export async function addCitation(claimId: number, sourceId: number, verified: boolean) { const db = await getDb(); if (!db) return; await db.insert(researchCitations).values({ claimId, sourceId, verified: verified ? 1 : 0 }); }
 export async function listSessions(userId?: number, limit = 30) {
@@ -223,7 +237,7 @@ export async function getSession(id: number, userId?: number) {
     const sources = mem.sources.filter((s) => s.sessionId === id).sort((a, b) => (b.qualityScore ?? 0) - (a.qualityScore ?? 0));
     const claims = mem.claims.filter((c) => c.sessionId === id);
     const evidence = claims.length ? mem.evidence.filter((e) => claims.some((c) => c.id === e.claimId)) : [];
-    return { session, messages, queries, sources, claims, evidence };
+    return { session, messages, queries, sources, claims, evidence, contradictions: [] as Array<{ id: number; claimId: number; description: string; sourceIds: unknown }>, passages: [] as Array<{ id: number; sourceId: number; text: string }> };
   }
   const where = userId ? and(eq(researchSessions.id, id), eq(researchSessions.userId, userId)) : eq(researchSessions.id, id);
   const session = (await db.select().from(researchSessions).where(where).limit(1))[0];
@@ -237,7 +251,10 @@ export async function getSession(id: number, userId?: number) {
   const evidence = claims.length
     ? await db.select().from(researchEvidence).where(inArray(researchEvidence.claimId, claims.map((claim) => claim.id)))
     : [];
-  return { session, messages, queries, sources, claims, evidence };
+  const contradictions = await db.select().from(researchContradictions).where(eq(researchContradictions.sessionId, id));
+  const evidencePassageIds = Array.from(new Set(evidence.map((e) => e.passageId)));
+  const passages = evidencePassageIds.length ? await db.select({ id: researchPassages.id, sourceId: researchPassages.sourceId, text: researchPassages.text }).from(researchPassages).where(inArray(researchPassages.id, evidencePassageIds)) : [];
+  return { session, messages, queries, sources, claims, evidence, contradictions, passages };
 }
 
 // ---------------------------------------------------------------------------

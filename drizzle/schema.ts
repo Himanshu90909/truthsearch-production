@@ -85,6 +85,9 @@ export const researchClaims = pgTable("research_claims", {
   claim: text("claim").notNull(),
   confidence: integer("confidence").notNull(),
   verificationStatus: verificationStatusEnum("verificationStatus").notNull(),
+  // 5-state status (verified | partial | conflicting | unsupported | outdated) and the reason, added additively.
+  status: varchar("status", { length: 24 }),
+  explanation: text("explanation"),
 });
 
 export const researchEvidence = pgTable("research_evidence", {
