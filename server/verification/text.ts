@@ -95,3 +95,27 @@ export function htmlToText(html: string): string {
     .replace(/\n{2,}/g, "\n")
     .trim();
 }
+
+/**
+ * Publication date from page metadata, used only when the search provider did not supply one. Checks, in order:
+ * Open Graph/article meta, JSON-LD datePublished/dateModified, Dublin Core/citation meta, then the first <time datetime>.
+ * Returns an ISO date (YYYY-MM-DD) or null. Never guesses from body text and rejects future or pre-1990 dates.
+ */
+export function extractPublishedDate(html: string, now = new Date()): string | null {
+  const head = html.slice(0, 400_000);
+  const candidates: string[] = [];
+  const meta = (name: string) => {
+    const a = head.match(new RegExp(`<meta[^>]+(?:property|name|itemprop)=["']${name}["'][^>]*content=["']([^"']+)["']`, "i"));
+    const b = head.match(new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]*(?:property|name|itemprop)=["']${name}["']`, "i"));
+    return (a || b)?.[1];
+  };
+  for (const n of ["article:published_time", "og:published_time", "datePublished", "pubdate", "publish-date", "date", "dc.date", "DC.date.issued", "citation_publication_date", "citation_date", "article:modified_time", "dateModified", "og:updated_time"]) { const v = meta(n); if (v) candidates.push(v); }
+  for (const m of Array.from(head.matchAll(/"date(?:Published|Created|Modified)"\s*:\s*"([^"]{8,40})"/g))) candidates.push(m[1]);
+  const t = head.match(/<time[^>]+datetime=["']([^"']{8,40})["']/i); if (t) candidates.push(t[1]);
+  for (const c of candidates) {
+    const ms = Date.parse(c.trim()); if (Number.isNaN(ms)) continue;
+    const d = new Date(ms); if (d.getUTCFullYear() < 1990 || ms > now.getTime() + 2 * 864e5) continue;
+    return d.toISOString().slice(0, 10);
+  }
+  return null;
+}

@@ -1,4 +1,4 @@
-import { splitSentences } from "./text";
+import { isBoilerplate, splitSentences } from "./text";
 
 // ---------------------------------------------------------------------------
 // Claim-level verification (spec section D).
@@ -20,7 +20,7 @@ export const OUTDATED_AFTER_YEARS = 2;
 export type SourceRef = { id: number; url: string; domain: string; title?: string; publishedAt?: string | null; credibility: number };
 export type Passage = { sourceId: number; text: string };
 export type Stance = "supports" | "contradicts" | "neutral";
-export type EvidenceItem = { claim: string; source: SourceRef; passage: string; stance: Stance; relevance: number };
+export type EvidenceItem = { claim: string; source: SourceRef; passage: string; stance: Stance; relevance: number; reason?: string };
 
 export type ClaimVerdict = {
   claim: string;
@@ -107,21 +107,37 @@ function overlap(a: Set<string>, b: Set<string>): number { let n = 0; Array.from
  * quantity with a materially different value (more than 15% apart).
  */
 export function judgeStance(claim: string, passage: string): { stance: Stance; relevance: number; reason: string } {
-  const ck = keywords(claim), pk = keywords(passage);
-  const relevance = Math.round(overlap(ck, pk) * 100);
+  const ck = keywords(claim);
+  const relevance = Math.round(overlap(ck, keywords(passage)) * 100);
   if (relevance < 40) return { stance: "neutral", relevance, reason: "passage is not about the same topic" };
 
-  const cq = extractQuantities(claim), pq = extractQuantities(passage);
-  if (cq.length && pq.length) {
-    const close = cq.some((c) => pq.some((p) => Math.abs(c.value - p.value) / Math.max(Math.abs(c.value), 1) <= 0.15));
-    if (close) return { stance: "supports", relevance, reason: "same figure within 15%" };
-    const sameKind = cq.some((c) => pq.some((p) => c.unit === p.unit));
-    if (sameKind) return { stance: "contradicts", relevance, reason: `figures differ by more than 15% (${cq[0].value} vs ${pq[0].value})` };
+  // Judge sentence by sentence. A negation or a different number only counts when it sits in the SAME sentence that is
+  // about the claim. Judging the whole passage let unrelated page text ("No more previous content") flip the result.
+  const split = splitSentences(passage);
+  const sentences = (split.length ? split : [passage]).filter((x) => !isBoilerplate(x)); // whole passage only when it could not be split
+  let best: { stance: Stance; relevance: number; reason: string } | null = null;
+  const cq = extractQuantities(claim); const cNeg = NEGATION.test(claim);
+  for (const sent of sentences) {
+    const sk = keywords(sent); const rel = Math.round(overlap(ck, sk) * 100);
+    if (rel < 50) continue;                                    // this sentence is not about the claim
+    // Coverage of the CLAIM's own words. A sentence that only repeats a name ("Satya Nadella Satya Nadella") overlaps
+    // highly with a short keyword set but does not say anything about the predicate (CEO, population, date...).
+    const coverage = Array.from(ck).filter((w) => sk.has(w)).length / Math.max(1, ck.size);
+    if (coverage < 0.6) continue;                              // names alone (2 of 4 words) are not enough; the predicate must be present
+    const pq = extractQuantities(sent);
+    let verdict: { stance: Stance; reason: string } | null = null;
+    if (cq.length && pq.length) {
+      if (cq.some((c) => pq.some((p) => Math.abs(c.value - p.value) / Math.max(Math.abs(c.value), 1) <= 0.15))) verdict = { stance: "supports", reason: "same figure within 15%" };
+      else if (cq.some((c) => pq.some((p) => c.unit === p.unit))) verdict = { stance: "contradicts", reason: `figures differ by more than 15% (${cq[0].value} vs ${pq[0].value})` };
+    }
+    if (!verdict) {
+      const pNeg = NEGATION.test(sent);
+      if (cNeg !== pNeg && rel >= 65) verdict = { stance: "contradicts", reason: "opposite polarity in a sentence about the same subject" };
+      else if (rel >= 55) verdict = { stance: "supports", reason: "a sentence states the same thing" };
+    }
+    if (verdict && (!best || rel > best.relevance || (verdict.stance === "contradicts" && best.stance !== "contradicts" && rel >= best.relevance - 10))) best = { ...verdict, relevance: rel };
   }
-  const cNeg = NEGATION.test(claim), pNeg = NEGATION.test(passage);
-  if (cNeg !== pNeg && relevance >= 60) return { stance: "contradicts", relevance, reason: "opposite polarity on the same topic" };
-  if (relevance >= 55) return { stance: "supports", relevance, reason: "passage states the same thing" };
-  return { stance: "neutral", relevance, reason: "weak overlap" };
+  return best ?? { stance: "neutral", relevance, reason: "no single sentence addresses the claim" };
 }
 
 // ---- verification ----------------------------------------------------------
@@ -141,7 +157,8 @@ export function verifyClaim(claim: string, evidence: EvidenceItem[], opts: Verif
 
   if (contradicting.length) {
     const cd = Array.from(new Set(contradicting.map((e) => registrableDomain(e.source.domain || e.source.url))));
-    return { ...base, status: "conflicting", confidence: Math.min(45, strength), explanation: `${contradicting.length} passage${contradicting.length > 1 ? "s" : ""} from ${cd.join(", ")} contradict this claim${supporting.length ? `, while ${domains.length} domain${domains.length === 1 ? "" : "s"} support it` : ""}. Reported as conflicting rather than picking a side.` };
+    const why = Array.from(new Set(contradicting.map((e) => e.reason).filter(Boolean))).slice(0, 2).join("; ");
+    return { ...base, status: "conflicting", confidence: Math.min(45, strength), explanation: `${contradicting.length} passage${contradicting.length > 1 ? "s" : ""} from ${cd.join(", ")} disagree${contradicting.length > 1 ? "" : "s"} with this claim${why ? ` (${why})` : ""}${supporting.length ? `, while ${domains.length} independent domain${domains.length === 1 ? "" : "s"} support it` : ""}. Both are shown rather than picking a side.` };
   }
   if (!supporting.length) return { ...base, status: "unsupported", confidence: 0, explanation: "No retrieved passage states this claim. It is not verified and should not be relied on." };
 
@@ -163,7 +180,7 @@ export function verifyClaims(claims: string[], sources: SourceRef[], passages: P
     for (const p of passages) {
       const source = byId.get(p.sourceId); if (!source) continue;
       const j = judgeStance(claim, p.text);
-      if (j.stance !== "neutral") evidence.push({ claim, source, passage: p.text, stance: j.stance, relevance: j.relevance });
+      if (j.stance !== "neutral") evidence.push({ claim, source, passage: p.text, stance: j.stance, relevance: j.relevance, reason: j.reason });
     }
     return verifyClaim(claim, evidence, opts);
   });

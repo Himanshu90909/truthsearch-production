@@ -1,5 +1,5 @@
 import { invokeLLM } from "./_core/llm";
-import { buildPassages, htmlToText } from "./verification/text";
+import { buildPassages, extractPublishedDate, htmlToText } from "./verification/text";
 import { scanForInjection } from "./verification/injection";
 import { crossEncoderRank, denseRank } from "./ml";
 import { analyzeImageFromUrl } from "./visual/analysis";
@@ -757,7 +757,8 @@ async function fetchReadable(hit: SearchHit, question: string, failures?: string
     const built = buildPassages(injection.cleaned, 30);
     const passages = built.length ? built : [content.slice(0, 900)];           // fall back only if every line looked like page chrome
     const relevance = queryContentRelevance(question, `${hit.title} ${hit.snippet} ${content}`);
-    const record: SourceRecord = { ...hit, canonicalUrl, domain: u.hostname, sourceType: classifySource(u.hostname, hit.provider), qualityScore: scoreSource(hit, u.hostname, relevance), content, passages, relevance };
+    const published = hit.published || (isHtml ? extractPublishedDate(raw) ?? undefined : undefined); // page metadata when the search API gave no date
+    const record: SourceRecord = { ...hit, published, canonicalUrl, domain: u.hostname, sourceType: classifySource(u.hostname, hit.provider), qualityScore: scoreSource(hit, u.hostname, relevance), content, passages, relevance };
     return { record, html: raw };
   } catch (error) { failures?.push(`${new URL(hit.url).hostname}: ${error instanceof Error ? error.name === "TimeoutError" ? "timed out" : error.message.slice(0, 60) : "fetch failed"}`); return null; }
 }

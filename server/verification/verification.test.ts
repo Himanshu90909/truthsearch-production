@@ -92,7 +92,7 @@ describe("verifyClaim rules", () => {
   });
   it("a credible contradiction makes the claim conflicting even with plenty of support", () => {
     const v = verifyClaim(claim, [ev(claim, src(1, "a.com"), p), ev(claim, src(2, "b.com"), p), ev(claim, src(3, "c.org"), "It was completed in 1900.", "contradicts")], { now: NOW });
-    expect(v.status).toBe("conflicting"); expect(v.contradicting).toHaveLength(1); expect(v.explanation).toMatch(/contradict/);
+    expect(v.status).toBe("conflicting"); expect(v.contradicting).toHaveLength(1); expect(v.explanation).toMatch(/disagree/);
   });
   it("ignores a contradiction from a very low credibility source", () => {
     const v = verifyClaim(claim, [ev(claim, src(1, "a.com"), p), ev(claim, src(2, "b.com"), p), ev(claim, src(3, "spam.biz", "2026-01-01", 10), "no it was not", "contradicts")], { now: NOW });
@@ -171,5 +171,35 @@ describe("page labels are not claims", () => {
     const claims = extractClaims("From Wikipedia, the free encyclopedia This article is about the people from the republic of India.\nIndia is the most populous country in the world, comprising approximately one-sixth of the world population.");
     expect(claims.some((c) => /^From Wikipedia|This article is about/.test(c))).toBe(false);
     expect(claims.some((c) => c.includes("most populous country"))).toBe(true);
+  });
+});
+
+import { extractPublishedDate } from "./text";
+describe("publication date from page metadata", () => {
+  const now = new Date("2026-11-26T00:00:00Z");
+  it("reads Open Graph article time", () => { expect(extractPublishedDate('<head><meta property="article:published_time" content="2025-03-04T10:00:00Z"></head>', now)).toBe("2025-03-04"); });
+  it("reads JSON-LD datePublished", () => { expect(extractPublishedDate('<script type="application/ld+json">{"@type":"NewsArticle","datePublished":"2024-12-01T08:00:00+05:30"}</script>', now)).toBe("2024-12-01"); });
+  it("reads content-before-name meta order and <time datetime>", () => {
+    expect(extractPublishedDate('<meta content="2023-06-07" name="citation_publication_date">', now)).toBe("2023-06-07");
+    expect(extractPublishedDate('<p>Posted <time datetime="2022-01-15">Jan 15</time></p>', now)).toBe("2022-01-15");
+  });
+  it("returns null rather than guessing, and rejects future or absurd dates", () => {
+    expect(extractPublishedDate("<p>Updated recently. Copyright 2026.</p>", now)).toBeNull();
+    expect(extractPublishedDate('<meta property="article:published_time" content="2031-01-01">', now)).toBeNull();
+    expect(extractPublishedDate('<meta property="article:published_time" content="1970-01-01">', now)).toBeNull();
+  });
+});
+
+describe("stance is judged per sentence (regression: LinkedIn page chrome flipped a true claim to conflicting)", () => {
+  const claim = "Satya Nadella is the current CEO of Microsoft.";
+  it("does not treat unrelated 'No more previous content' text as a contradiction", () => {
+    const page = "Activity 12M followers Posts Reactions No more previous content Satya Nadella Satya Nadella 2d Report this post. Satya Nadella is the chairman and chief executive officer of Microsoft since 2014.";
+    expect(judgeStance(claim, page).stance).not.toBe("contradicts");
+  });
+  it("still detects a real negation about the same subject", () => {
+    expect(judgeStance(claim, "Satya Nadella is not the CEO of Microsoft any more, the company announced.").stance).toBe("contradicts");
+  });
+  it("still detects a real differing number inside the relevant sentence", () => {
+    expect(judgeStance("India's population was about 1.43 billion in 2023.", "Some unrelated text first. India's population was about 900 million people in 2023, this site claims.").stance).toBe("contradicts");
   });
 });
