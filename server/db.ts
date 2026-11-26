@@ -23,6 +23,22 @@ const TYPE_STMTS = [
   `DO $$ BEGIN CREATE TYPE "visual_status" AS ENUM ('queued', 'analyzing', 'completed', 'failed', 'cancelled'); EXCEPTION WHEN duplicate_object THEN null; END $$;`,
 ];
 
+// Phase 1 platform tables. These are ADDITIVE: they are created with IF NOT EXISTS and are never dropped.
+const PLATFORM_STMTS = [
+  `CREATE TABLE IF NOT EXISTS "rate_limits" ("key" varchar(160) NOT NULL, "windowStart" bigint NOT NULL, "count" integer DEFAULT 0 NOT NULL, "expiresAt" bigint NOT NULL, PRIMARY KEY ("key", "windowStart"));`,
+  `CREATE INDEX IF NOT EXISTS "rate_limits_expires_idx" ON "rate_limits" ("expiresAt");`,
+  `CREATE TABLE IF NOT EXISTS "usage_ledger" ("id" serial PRIMARY KEY NOT NULL, "userId" integer, "sessionId" integer, "kind" varchar(32) NOT NULL, "provider" varchar(64), "model" varchar(160), "promptTokens" integer, "completionTokens" integer, "tokensEstimated" integer DEFAULT 0 NOT NULL, "costUsd" numeric(12,6), "latencyMs" integer, "status" varchar(16) DEFAULT 'ok' NOT NULL, "error" varchar(300), "requestId" varchar(64), "createdAt" timestamp DEFAULT now() NOT NULL);`,
+  `CREATE INDEX IF NOT EXISTS "usage_ledger_user_day_idx" ON "usage_ledger" ("userId", "createdAt");`,
+  `CREATE TABLE IF NOT EXISTS "audit_logs" ("id" serial PRIMARY KEY NOT NULL, "userId" integer, "action" varchar(48) NOT NULL, "target" varchar(200), "ip" varchar(64), "requestId" varchar(64), "meta" json, "createdAt" timestamp DEFAULT now() NOT NULL);`,
+  `CREATE INDEX IF NOT EXISTS "audit_logs_action_idx" ON "audit_logs" ("action", "createdAt");`,
+];
+
+// Additive column upgrades for existing tables. ADD COLUMN IF NOT EXISTS keeps all existing rows.
+const ADDITIVE_COLUMN_STMTS = [
+  `ALTER TABLE "research_claims" ADD COLUMN IF NOT EXISTS "status" varchar(24)`,
+  `ALTER TABLE "research_claims" ADD COLUMN IF NOT EXISTS "explanation" text`,
+];
+
 const TABLE_COLUMNS: Record<string, string[]> = {
   users: ["id", "openId", "name", "email", "loginMethod", "role", "passwordHash", "createdAt", "updatedAt", "lastSignedIn"],
   research_sessions: ["id", "userId", "title", "question", "status", "answer", "plan", "error", "collectionId", "createdAt", "updatedAt"],
@@ -80,7 +96,12 @@ async function ensureSchema(db: NonNullable<ReturnType<typeof drizzle>>): Promis
   for (const [table, stmt] of Object.entries(CREATE_STMTS)) {
     try { await db.execute(sql.raw(stmt)); } catch (error) { console.warn(`[Database] Create failed for ${table}:`, error); }
   }
-  // Shape check: any table that exists with incompatible columns is dropped and recreated.
+  for (const stmt of [...PLATFORM_STMTS, ...ADDITIVE_COLUMN_STMTS]) {
+    try { await db.execute(sql.raw(stmt)); } catch (error) { console.warn("[Database] Additive migration step failed:", String(error).slice(0, 200)); }
+  }
+  // Shape check. A table with missing columns is NO LONGER dropped (that destroyed user data). Missing columns are
+  // reported loudly instead; an operator must migrate them. Set ALLOW_DESTRUCTIVE_SCHEMA_RESET=true to restore the
+  // old drop-and-recreate behaviour on a disposable database only.
   try {
     const result = await db.execute(sql`SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public'`);
     const rows = (Array.isArray(result) ? result : (result as unknown as { rows?: Array<{ table_name: string; column_name: string }> }).rows) || [];
@@ -94,9 +115,13 @@ async function ensureSchema(db: NonNullable<ReturnType<typeof drizzle>>): Promis
       if (!cols || !cols.size) continue; // table was just created fresh
       const missing = expected.filter((col) => !cols.has(col));
       if (missing.length) {
-        console.warn(`[Database] Table ${table} has incompatible shape (missing: ${missing.join(", ")}); recreating it.`);
-        await db.execute(sql.raw(`DROP TABLE IF EXISTS "${table}" CASCADE;`));
-        await db.execute(sql.raw(CREATE_STMTS[table]));
+        if (process.env.ALLOW_DESTRUCTIVE_SCHEMA_RESET === "true") {
+          console.warn(`[Database] Table ${table} missing ${missing.join(", ")}; recreating it (ALLOW_DESTRUCTIVE_SCHEMA_RESET=true).`);
+          await db.execute(sql.raw(`DROP TABLE IF EXISTS "${table}" CASCADE;`));
+          await db.execute(sql.raw(CREATE_STMTS[table]));
+        } else {
+          console.error(`[Database] Table ${table} is missing columns: ${missing.join(", ")}. Not dropping it. Add them with ALTER TABLE.`);
+        }
       }
     }
   } catch (error) {
@@ -391,4 +416,57 @@ export async function eventMetrics(days = 30): Promise<EventMetrics> {
     research: { completed, failed, avgLatencyMs: latencyCount ? Math.round(latencySum / latencyCount) : null, totalSources },
     recentEvents: rows.slice(0, 50),
   };
+}
+
+
+// ---------------------------------------------------------------------------
+// Phase 1 helpers: shared rate limiting, usage ledger, audit log.
+// ---------------------------------------------------------------------------
+import type { RateLimitStore } from "./platform/ratelimit";
+import { sanitizeMeta, type AuditEntry } from "./platform/audit";
+
+export class PostgresRateLimitStore implements RateLimitStore {
+  async increment(key: string, windowStart: number, windowMs: number): Promise<number> {
+    const db = await getDb();
+    if (!db) throw new Error("no database");
+    const res = await db.execute(sql`INSERT INTO "rate_limits" ("key","windowStart","count","expiresAt") VALUES (${key.slice(0, 160)}, ${windowStart}, 1, ${windowStart + windowMs * 2}) ON CONFLICT ("key","windowStart") DO UPDATE SET "count" = "rate_limits"."count" + 1 RETURNING "count"`);
+    const rows = (Array.isArray(res) ? res : (res as unknown as { rows?: Array<{ count: number }> }).rows) || [];
+    if (Math.random() < 0.02) void db.execute(sql`DELETE FROM "rate_limits" WHERE "expiresAt" < ${Date.now()}`).catch(() => {});
+    return Number(rows[0]?.count ?? 1);
+  }
+}
+
+export type LedgerEntry = { userId: number | null; sessionId?: number | null; kind: string; provider?: string | null; model?: string | null; promptTokens?: number | null; completionTokens?: number | null; tokensEstimated?: boolean; costUsd?: number | null; latencyMs?: number | null; status?: "ok" | "error" | "timeout" | "fallback"; error?: string | null; requestId?: string | null };
+
+export async function recordUsage(entry: LedgerEntry): Promise<void> {
+  try {
+    const db = await getDb(); if (!db) return;
+    await db.execute(sql`INSERT INTO "usage_ledger" ("userId","sessionId","kind","provider","model","promptTokens","completionTokens","tokensEstimated","costUsd","latencyMs","status","error","requestId") VALUES (${entry.userId}, ${entry.sessionId ?? null}, ${entry.kind}, ${entry.provider ?? null}, ${entry.model ?? null}, ${entry.promptTokens ?? null}, ${entry.completionTokens ?? null}, ${entry.tokensEstimated ? 1 : 0}, ${entry.costUsd ?? null}, ${entry.latencyMs ?? null}, ${entry.status ?? "ok"}, ${entry.error ? String(entry.error).slice(0, 300) : null}, ${entry.requestId ?? null})`);
+  } catch (error) { console.warn("[Ledger] write failed:", String(error).slice(0, 160)); }
+}
+
+/** Tokens and USD spent today (UTC day). `userId` null means everyone. USD sums only rows that have a known price. */
+export async function spentToday(userId: number | null): Promise<{ tokens: number; usd: number }> {
+  try {
+    const db = await getDb(); if (!db) return { tokens: 0, usd: 0 };
+    const res = userId == null
+      ? await db.execute(sql`SELECT COALESCE(SUM(COALESCE("promptTokens",0)+COALESCE("completionTokens",0)),0) AS t, COALESCE(SUM("costUsd"),0) AS c FROM "usage_ledger" WHERE "createdAt" >= date_trunc('day', now() at time zone 'utc')`)
+      : await db.execute(sql`SELECT COALESCE(SUM(COALESCE("promptTokens",0)+COALESCE("completionTokens",0)),0) AS t, COALESCE(SUM("costUsd"),0) AS c FROM "usage_ledger" WHERE "userId" = ${userId} AND "createdAt" >= date_trunc('day', now() at time zone 'utc')`);
+    const rows = (Array.isArray(res) ? res : (res as unknown as { rows?: Array<{ t: string; c: string }> }).rows) || [];
+    return { tokens: Number(rows[0]?.t ?? 0), usd: Number(rows[0]?.c ?? 0) };
+  } catch { return { tokens: 0, usd: 0 }; }
+}
+
+export async function writeAudit(entry: AuditEntry): Promise<void> {
+  try {
+    const db = await getDb(); if (!db) return;
+    const meta = entry.meta ? JSON.stringify(sanitizeMeta(entry.meta)) : null;
+    await db.execute(sql`INSERT INTO "audit_logs" ("userId","action","target","ip","requestId","meta") VALUES (${entry.userId}, ${entry.action}, ${entry.target ?? null}, ${entry.ip ?? null}, ${entry.requestId ?? null}, ${meta}::json)`);
+  } catch (error) { console.warn("[Audit] write failed:", String(error).slice(0, 160)); }
+}
+
+export async function listAudit(limit = 100) {
+  const db = await getDb(); if (!db) return [];
+  const res = await db.execute(sql`SELECT "id","userId","action","target","ip","requestId","meta","createdAt" FROM "audit_logs" ORDER BY "id" DESC LIMIT ${Math.min(limit, 500)}`);
+  return ((Array.isArray(res) ? res : (res as unknown as { rows?: unknown[] }).rows) || []) as Array<Record<string, unknown>>;
 }

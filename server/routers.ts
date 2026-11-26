@@ -10,6 +10,11 @@ import { LOCAL_SESSION_COOKIE, SESSION_TTL_MS, hashPassword, normalizeEmail, val
 import { storagePut } from "./storage";
 import { buildModeQueries, classifyIntent, conductResearch, makeQueries, RESEARCH_MODES } from "./research";
 import { providerRegistry, providerStatuses, providersForIntent } from "./providers/registry";
+import { PostgresRateLimitStore, listAudit, spentToday, writeAudit } from "./db";
+import { MemoryRateLimitStore, callerKey, checkRateLimit, hourlyLimitFor, type RateLimitStore } from "./platform/ratelimit";
+import { evaluateBudget, readBudgetPolicy } from "./platform/budget";
+import { safeEqual } from "./platform/admin-token";
+import { adminProcedure } from "./_core/trpc";
 import { gnaniConfigured, gnaniSpeak, gnaniTranscribe, STT_LANGUAGES, TTS_LANGUAGES } from "./gnani";
 
 const questionInput = z.object({ question: z.string().trim().min(8).max(1200) });
@@ -47,21 +52,25 @@ async function runResearch(id: number, question: string, userId: number | null, 
 // the queue-backed worker phase lands.
 // ---------------------------------------------------------------------------
 const RATE_WINDOW_MS = 60 * 60 * 1000;
-const rateBuckets = new Map<string, number[]>();
-function checkRate(key: string, limit: number): boolean {
-  const now = Date.now();
-  const hits = (rateBuckets.get(key) || []).filter((t) => now - t < RATE_WINDOW_MS);
-  if (hits.length >= limit) { rateBuckets.set(key, hits); return false; }
-  hits.push(now);
-  rateBuckets.set(key, hits);
-  if (rateBuckets.size > 5000) rateBuckets.clear();
-  return true;
-}
-function rateKey(ctx: { user: { id: number } | null; req: { headers: Record<string, unknown> } }): string {
-  if (ctx.user) return `user:${ctx.user.id}`;
-  const forwarded = ctx.req.headers["x-forwarded-for"];
-  const ip = typeof forwarded === "string" ? forwarded.split(",")[0].trim() : "anonymous";
-  return `ip:${ip}`;
+// Shared limiter: Postgres when DATABASE_URL is set (so every serverless instance sees the same counters), memory otherwise.
+const rateStore: RateLimitStore = process.env.DATABASE_URL ? new PostgresRateLimitStore() : new MemoryRateLimitStore();
+const memoryFallback = new MemoryRateLimitStore();
+async function enforceQuota(ctx: { user: { id: number; role?: string } | null; req: { headers: Record<string, unknown> } }): Promise<void> {
+  const key = callerKey(ctx.user, ctx.req.headers["x-forwarded-for"]);
+  let decision;
+  try { decision = await checkRateLimit(rateStore, key, hourlyLimitFor(ctx.user), RATE_WINDOW_MS); }
+  catch { decision = await checkRateLimit(memoryFallback, key, hourlyLimitFor(ctx.user), RATE_WINDOW_MS); } // never fail open on a store outage
+  if (!decision.allowed) {
+    void writeAudit({ userId: ctx.user?.id ?? null, action: "ratelimit.blocked", target: key, meta: { limit: decision.limit } });
+    throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: `Hourly research limit reached. Try again in ${Math.ceil(decision.retryAfterSec / 60)} min${ctx.user ? "" : ", or sign in for a higher limit"}.` });
+  }
+  const policy = readBudgetPolicy();
+  const [mine, everyone] = await Promise.all([ctx.user ? spentToday(ctx.user.id) : Promise.resolve({ tokens: 0, usd: 0 }), spentToday(null)]);
+  const budget = evaluateBudget(policy, { userTokens: mine.tokens, globalTokens: everyone.tokens, globalUsd: everyone.usd });
+  if (!budget.allowed) {
+    void writeAudit({ userId: ctx.user?.id ?? null, action: "budget.blocked", target: key, meta: { reason: budget.reason } });
+    throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: budget.reason === "user_tokens" ? "Your daily usage budget is used up. It resets at 00:00 UTC." : "The service has reached its daily usage budget. Please try again tomorrow." });
+  }
 }
 
 export const appRouter = router({
@@ -77,18 +86,19 @@ export const appRouter = router({
       const { token } = await createLocalSession(user.id);
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.cookie(LOCAL_SESSION_COOKIE, token, { ...cookieOptions, maxAge: SESSION_TTL_MS });
-      void recordEvent("account.registered", user.id, { domain: email.split("@")[1] ?? null });
+      void recordEvent("account.registered", user.id, { domain: email.split("@")[1] ?? null }); void writeAudit({ userId: user.id, action: "auth.register" });
       return { user: { id: user.id, name: user.name, email: user.email, role: user.role } };
     }),
     login: publicProcedure.input(z.object({ email: z.string().trim().max(320), password: z.string().min(1).max(200) })).mutation(async ({ input, ctx }) => {
       const email = normalizeEmail(input.email);
       const user = await getUserByEmail(email);
-      if (!user || !user.passwordHash) throw new Error("Email or password is incorrect.");
-      if (!(await verifyPassword(input.password, user.passwordHash))) throw new Error("Email or password is incorrect.");
+      const bad = async () => { void writeAudit({ userId: user?.id ?? null, action: "auth.login_failed", ip: String(ctx.req.headers["x-forwarded-for"] ?? "").split(",")[0].trim().slice(0, 64) || null }); throw new Error("Email or password is incorrect."); };
+      if (!user || !user.passwordHash) return bad();
+      if (!(await verifyPassword(input.password, user.passwordHash))) return bad();
       const { token } = await createLocalSession(user.id);
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.cookie(LOCAL_SESSION_COOKIE, token, { ...cookieOptions, maxAge: SESSION_TTL_MS });
-      void recordEvent("account.login", user.id, null);
+      void recordEvent("account.login", user.id, null); void writeAudit({ userId: user.id, action: "auth.login", ip: String(ctx.req.headers["x-forwarded-for"] ?? "").split(",")[0].trim().slice(0, 64) || null });
       return { user: { id: user.id, name: user.name, email: user.email, role: user.role } };
     }),
     logout: publicProcedure.mutation(({ ctx }) => {
@@ -103,7 +113,7 @@ export const appRouter = router({
     providers: publicProcedure.query(() => ({ web: process.env.ENABLE_PAID_SEARCH === "true" && (process.env.SEARCH_PROVIDER === "brave" || process.env.SEARCH_PROVIDER === "tavily") ? process.env.SEARCH_PROVIDER : "duckduckgo", academic: process.env.ACADEMIC_SEARCH_PROVIDER || "arxiv", paidSearchEnabled: process.env.ENABLE_PAID_SEARCH === "true", configured: true, knowledge: providerStatuses() })),
     health: publicProcedure.query(async () => { const statuses = providerStatuses(); const checks = await Promise.all(statuses.map(async (status) => { const provider = providerRegistry.get(status.name); if (!provider) return status; if (!status.enabled) return status; const healthy = await provider.healthCheck(); return { ...status, status: healthy ? "healthy" as const : "unavailable" as const, ...(healthy ? {} : { reason: "Health check failed or provider is rate limited." }) }; })); return checks; }),
     plan: publicProcedure.input(z.object({ question: questionInput.shape.question, mode: z.enum(RESEARCH_MODES).default("quick") })).query(({ input }) => { const intent = classifyIntent(input.question); return { queries: buildModeQueries(input.question, input.mode), mode: input.mode, intent, providers: providersForIntent(intent), bounded: true, maxRounds: Number(process.env.MAX_RESEARCH_ROUNDS || 3) }; }),
-    start: publicProcedure.input(z.object({ question: z.string().trim().min(8).max(1200), mode: z.enum(RESEARCH_MODES).default("quick"), contextText: z.string().max(60000).optional(), imageUrls: z.array(z.string().url().max(600)).max(4).optional(), imageDataUrls: z.array(z.string().regex(/^data:image\/(jpeg|png|webp);base64,/).max(1_600_000)).max(4).optional() })).mutation(async ({ input, ctx }) => { if (!checkRate(rateKey(ctx), ctx.user ? 40 : 8)) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "Hourly research limit reached. Sign in for more, or try again later." }); const id = await createSession(input.question, ctx.user?.id); void recordEvent("research.started", ctx.user?.id ?? null, { mode: input.mode }); const research = runResearch(id, input.question, ctx.user?.id ?? null, { contextText: input.contextText, imageUrls: input.imageUrls, imageDataUrls: input.imageDataUrls }, input.mode); if (SYNC_RESEARCH) await research; else void research; return { id }; }),
+    start: publicProcedure.input(z.object({ question: z.string().trim().min(8).max(1200), mode: z.enum(RESEARCH_MODES).default("quick"), contextText: z.string().max(60000).optional(), imageUrls: z.array(z.string().url().max(600)).max(4).optional(), imageDataUrls: z.array(z.string().regex(/^data:image\/(jpeg|png|webp);base64,/).max(1_600_000)).max(4).optional() })).mutation(async ({ input, ctx }) => { await enforceQuota(ctx); void writeAudit({ userId: ctx.user?.id ?? null, action: "research.start", meta: { mode: input.mode } }); const id = await createSession(input.question, ctx.user?.id); void recordEvent("research.started", ctx.user?.id ?? null, { mode: input.mode }); const research = runResearch(id, input.question, ctx.user?.id ?? null, { contextText: input.contextText, imageUrls: input.imageUrls, imageDataUrls: input.imageDataUrls }, input.mode); if (SYNC_RESEARCH) await research; else void research; return { id }; }),
     list: publicProcedure.input(z.object({ limit: z.number().int().min(1).max(100).optional() }).optional()).query(({ input, ctx }) => listSessions(ctx.user?.id, input?.limit || 30)),
     get: publicProcedure.input(z.object({ id: z.number().int().positive() })).query(({ input, ctx }) => getSession(input.id, ctx.user?.id)),
     attachImage: publicProcedure.input(z.object({ filename: z.string().trim().min(1).max(200), dataUrl: z.string().regex(/^data:image\/(jpeg|png|webp);base64,/).max(7_500_000) })).mutation(async ({ input }) => { try { const meta = input.dataUrl.slice(0, input.dataUrl.indexOf(",")); const mime = meta.slice(5, meta.indexOf(";")); const buffer = Buffer.from(input.dataUrl.slice(input.dataUrl.indexOf(",") + 1), "base64"); if (buffer.byteLength > 5 * 1024 * 1024) throw new Error("Image is larger than the 5 MB upload limit."); const ext = mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg"; const { url } = await storagePut(`attachments/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`, new Uint8Array(buffer), mime); return { url }; } catch (error) { throw new Error(error instanceof Error ? error.message : "Image upload failed. Try another image."); } }),
@@ -126,13 +136,17 @@ export const appRouter = router({
     speak: publicProcedure.input(z.object({ text: z.string().trim().min(1).max(6000), language: z.enum(TTS_LANGUAGES).default("auto"), voice: z.string().trim().min(1).max(60).optional() })).mutation(async ({ input }) => { if (!gnaniConfigured()) throw new Error("Spoken answers are not configured on this deployment: set GNANI_API_KEY."); try { return await gnaniSpeak({ text: input.text, language: input.language, voice: input.voice }); } catch (error) { throw new Error(error instanceof Error ? error.message : "Speech synthesis failed."); } }),
   }),
   admin: router({
-    metrics: publicProcedure.input(z.object({ token: z.string().max(200).optional(), days: z.number().int().min(1).max(90).optional() }).optional()).query(async ({ input, ctx }) => {
-      const adminToken = (process.env.ADMIN_METRICS_TOKEN || "").trim();
-      const provided = (input?.token || "").trim();
-      const authorized = ctx.user?.role === "admin" || (adminToken !== "" && provided !== "" && provided === adminToken);
-      if (!authorized) throw new TRPCError({ code: "UNAUTHORIZED", message: "Admin access required." });
+    // Admin-only. The old public endpoint that accepted a shared token in the request body is gone. A monitoring
+    // service may still call this with the x-admin-token header (compared in constant time); browsers use role=admin.
+    metrics: publicProcedure.input(z.object({ days: z.number().int().min(1).max(90).optional() }).optional()).query(async ({ input, ctx }) => {
+      const configured = (process.env.ADMIN_METRICS_TOKEN || "").trim();
+      const header = ctx.req.headers["x-admin-token"];
+      const viaHeader = configured !== "" && typeof header === "string" && safeEqual(header.trim(), configured);
+      if (ctx.user?.role !== "admin" && !viaHeader) throw new TRPCError({ code: "UNAUTHORIZED", message: "Admin access required." });
+      void writeAudit({ userId: ctx.user?.id ?? null, action: "admin.metrics_view", meta: { via: viaHeader ? "token" : "role" } });
       return eventMetrics(input?.days ?? 30);
     }),
+    audit: adminProcedure.input(z.object({ limit: z.number().int().min(1).max(500).default(100) }).optional()).query(({ input }) => listAudit(input?.limit ?? 100)),
   }),
 });
 export type AppRouter = typeof appRouter;
