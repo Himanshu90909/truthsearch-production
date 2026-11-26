@@ -1,4 +1,6 @@
 import { invokeLLM } from "./_core/llm";
+import { buildPassages, htmlToText } from "./verification/text";
+import { scanForInjection } from "./verification/injection";
 import { crossEncoderRank, denseRank } from "./ml";
 import { analyzeImageFromUrl } from "./visual/analysis";
 import { visionConfigured } from "./visual/providers";
@@ -744,11 +746,16 @@ async function fetchReadable(hit: SearchHit, question: string, failures?: string
     if (!res.ok) { failures?.push(`${domain}: blocked or error (HTTP ${res.status})`); return null; }
     const type = res.headers.get("content-type") || "";
     if (!type.includes("text/html") && !type.includes("text/plain") && !type.includes("application/json")) { failures?.push(`${domain}: unsupported content-type`); return null; }
-    const raw = (await res.text()).slice(0, 120000);
-    const content = raw.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>|<[^>]+>/gi, " ").replace(/\s+/g, " ").trim();
+    const raw = (await res.text()).slice(0, 2_500_000);
+    const isHtml = type.includes("text/html");
+    const structured = (isHtml ? htmlToText(raw) : raw.trim()).slice(0, 150_000); // clean first, then cap the length
+    const injection = scanForInjection(structured);                            // retrieved pages are untrusted data
+    if (injection.suspicious) failures?.push(`${domain}: instruction-like text removed (${injection.reasons.slice(0, 2).join("; ")})`);
+    const content = injection.cleaned.replace(/\s+/g, " ").trim();
     if (content.length < 80) { failures?.push(`${domain}: no readable text`); return null; }
     const u = new URL(canonicalUrl);
-    const passages = content.match(/.{1,900}(?:[.!?]|$)/g)?.map((x) => x.trim()).filter((x) => x.length > 100).slice(0, 30) || [content.slice(0, 900)];
+    const built = buildPassages(injection.cleaned, 30);
+    const passages = built.length ? built : [content.slice(0, 900)];           // fall back only if every line looked like page chrome
     const relevance = queryContentRelevance(question, `${hit.title} ${hit.snippet} ${content}`);
     const record: SourceRecord = { ...hit, canonicalUrl, domain: u.hostname, sourceType: classifySource(u.hostname, hit.provider), qualityScore: scoreSource(hit, u.hostname, relevance), content, passages, relevance };
     return { record, html: raw };
