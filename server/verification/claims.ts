@@ -142,10 +142,12 @@ export function judgeStance(claim: string, passage: string): { stance: Stance; r
 
 // ---- verification ----------------------------------------------------------
 
-export type VerifyOptions = { now?: Date; minCredibility?: number };
+export type VerifyOptions = { now?: Date; minCredibility?: number; minIndependentDomains?: number; minVerifiedCredibility?: number };
 
 export function verifyClaim(claim: string, evidence: EvidenceItem[], opts: VerifyOptions = {}): ClaimVerdict {
   const now = opts.now ?? new Date(); const minCred = opts.minCredibility ?? 35;
+  const needDomains = opts.minIndependentDomains ?? MIN_INDEPENDENT_DOMAINS; // Maximum Verification raises this
+  const needCred = opts.minVerifiedCredibility ?? 0;                            // ... and can require stronger sources
   const usable = evidence.filter((e) => e.relevance >= 40);
   const supporting = usable.filter((e) => e.stance === "supports");
   const contradicting = usable.filter((e) => e.stance === "contradicts" && e.source.credibility >= minCred);
@@ -166,10 +168,13 @@ export function verifyClaim(claim: string, evidence: EvidenceItem[], opts: Verif
   if (isTimeSensitive(claim) && age != null && age > OUTDATED_AFTER_YEARS) {
     return { ...base, status: "outdated", confidence: Math.min(40, strength), explanation: `The newest supporting source is dated ${newest!.slice(0, 10)} (${age.toFixed(1)} years ago) and the claim concerns something that changes over time. It may no longer be true.` };
   }
-  if (domains.length >= MIN_INDEPENDENT_DOMAINS) {
-    return { ...base, status: "verified", confidence: Math.min(95, strength + 10 * (domains.length - MIN_INDEPENDENT_DOMAINS + 1)), explanation: `Supported by ${domains.length} independent domains (${domains.slice(0, 4).join(", ")}) with no credible contradiction found.${newest ? ` Newest source ${newest.slice(0, 10)}.` : " Source dates were not available."}` };
+  // Verified needs `needDomains` independent domains; in strict mode that many of them must also meet the credibility floor.
+  const credibleDomains = needCred > 0 ? Array.from(new Set(supporting.filter((e) => e.source.credibility >= needCred).map((e) => registrableDomain(e.source.domain)))) : domains;
+  if (domains.length >= needDomains && credibleDomains.length >= needDomains) {
+    return { ...base, status: "verified", confidence: Math.min(95, strength + 10 * (domains.length - needDomains + 1)), explanation: `Supported by ${domains.length} independent domains (${domains.slice(0, 4).join(", ")}) with no credible contradiction found.${newest ? ` Newest source ${newest.slice(0, 10)}.` : " Source dates were not available."}` };
   }
-  return { ...base, status: "partial", confidence: Math.min(60, strength), explanation: `Only ${domains.length} independent domain (${domains[0]}) supports this. Verification needs at least ${MIN_INDEPENDENT_DOMAINS} independent domains, so it is reported as partially supported.` };
+  const why = domains.length >= needDomains ? `${domains.length} independent domains support it but only ${credibleDomains.length} meet the credibility floor of ${needCred}` : `Only ${domains.length} independent domain${domains.length === 1 ? "" : "s"} (${domains.slice(0, 3).join(", ")}) support${domains.length === 1 ? "s" : ""} this`;
+  return { ...base, status: "partial", confidence: Math.min(60, strength), explanation: `${why}. Verification needs at least ${needDomains} independent domains${needCred ? ` with credibility of ${needCred} or more` : ""}, so it is reported as partially supported.` };
 }
 
 /** Group a pile of passages into per-claim evidence and verify each claim. */

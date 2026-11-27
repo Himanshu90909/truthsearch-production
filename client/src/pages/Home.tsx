@@ -52,7 +52,7 @@ const stageIcons = [BookOpen, Search, FileText, GitBranch, ShieldCheck, Check];
 type Source = { id: number; title: string; url: string; canonicalUrl?: string; domain: string; sourceType: string; qualityScore: number; author?: string | null; publicationDate?: string | null };
 type Evidence = { quote?: string; url?: string; title?: string; supportScore?: number; qualityScore?: number; claim?: string };
 type Conflict = { description: string; supporting?: Array<{ url?: string; title?: string }>; contradicting?: Array<{ url?: string; title?: string }> };
-type ResearchMode = "quick" | "deep" | "academic" | "verify" | "image";
+type ResearchMode = "quick" | "deep" | "academic" | "verify" | "max_verify" | "image";
 type ClaimStatus = "verified" | "partial" | "conflicting" | "unsupported" | "outdated" | "insufficient";
 type ClaimRow = { id: number; claim: string; confidence: number; status?: ClaimStatus | null; explanation?: string | null; verificationStatus?: string };
 const modes: Array<{ id: ResearchMode; label: string; hint: string }> = [
@@ -60,6 +60,7 @@ const modes: Array<{ id: ResearchMode; label: string; hint: string }> = [
   { id: "deep", label: "Deep research", hint: "More queries, more sources" },
   { id: "academic", label: "Academic", hint: "Papers and scholarly sources" },
   { id: "verify", label: "Verify a claim", hint: "Fact-check with a verdict" },
+  { id: "max_verify", label: "Maximum verification", hint: "Tries to disprove it. Needs 3 independent credible sources" },
   { id: "image", label: "Generate image", hint: "Create a picture from a prompt" },
 ];
 const statusLabels: Record<ClaimStatus, string> = { verified: "Verified", partial: "Partially supported", conflicting: "Conflicting", unsupported: "Unsupported", outdated: "Possibly outdated", insufficient: "Insufficient evidence" };

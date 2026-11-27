@@ -463,6 +463,15 @@ export async function recordUsage(entry: LedgerEntry): Promise<void> {
 }
 
 /** Tokens and USD spent today (UTC day). `userId` null means everyone. USD sums only rows that have a known price. */
+export async function spentTodayAnonymous(): Promise<number> {
+  try {
+    const db = await getDb(); if (!db) return 0;
+    const res = await db.execute(sql`SELECT COALESCE(SUM(COALESCE("promptTokens",0)+COALESCE("completionTokens",0)),0) AS t FROM "usage_ledger" WHERE "userId" IS NULL AND "createdAt" >= date_trunc('day', now() at time zone 'utc')`);
+    const rows = (Array.isArray(res) ? res : (res as unknown as { rows?: Array<{ t: string }> }).rows) || [];
+    return Number(rows[0]?.t ?? 0);
+  } catch { return 0; }
+}
+
 export async function spentToday(userId: number | null): Promise<{ tokens: number; usd: number }> {
   try {
     const db = await getDb(); if (!db) return { tokens: 0, usd: 0 };

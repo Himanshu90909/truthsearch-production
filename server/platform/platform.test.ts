@@ -75,3 +75,19 @@ describe("constant-time compare", () => {
     expect(safeEqual("secret", "secret")).toBe(true); expect(safeEqual("secret", "secreT")).toBe(false); expect(safeEqual("a", "abc")).toBe(false);
   });
 });
+
+describe("guest budget", () => {
+  const policy = { dailyTokensPerUser: 1000, dailyTokensAnonymous: 300, dailyTokensGlobal: 100000, dailyUsdGlobal: null };
+  it("blocks signed-out traffic once the shared guest allowance is used, without touching signed-in users", () => {
+    const spent = { userTokens: 0, globalTokens: 500, globalUsd: 0, anonymousTokens: 300 };
+    expect(evaluateBudget(policy, spent, false)).toMatchObject({ allowed: false, reason: "anonymous_tokens" });
+    expect(evaluateBudget(policy, spent, true).allowed).toBe(true);
+  });
+  it("allows guests below the allowance", () => {
+    expect(evaluateBudget(policy, { userTokens: 0, globalTokens: 0, globalUsd: 0, anonymousTokens: 299 }, false).allowed).toBe(true);
+  });
+  it("reads the guest allowance from the environment", () => {
+    expect(readBudgetPolicy({ BUDGET_DAILY_TOKENS_ANONYMOUS: "1234" }).dailyTokensAnonymous).toBe(1234);
+    expect(readBudgetPolicy({}).dailyTokensAnonymous).toBe(60000);
+  });
+});

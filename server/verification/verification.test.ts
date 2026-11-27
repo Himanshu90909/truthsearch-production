@@ -203,3 +203,42 @@ describe("stance is judged per sentence (regression: LinkedIn page chrome flippe
     expect(judgeStance("India's population was about 1.43 billion in 2023.", "Some unrelated text first. India's population was about 900 million people in 2023, this site claims.").stance).toBe("contradicts");
   });
 });
+
+describe("Maximum Verification strictness", () => {
+  const claim = "The Eiffel Tower is located in Paris and was completed in 1889.";
+  const p = "The Eiffel Tower in Paris was completed in 1889 for the World's Fair.";
+  const two = [ev(claim, src(1, "britannica.com", "2026-06-01", 80), p), ev(claim, src(2, "toureiffel.paris", "2026-06-01", 80), p)];
+  it("two independent domains verify in the normal mode but not when three are required", () => {
+    expect(verifyClaim(claim, two, { now: NOW }).status).toBe("verified");
+    const strict = verifyClaim(claim, two, { now: NOW, minIndependentDomains: 3 });
+    expect(strict.status).toBe("partial"); expect(strict.explanation).toMatch(/at least 3 independent domains/);
+  });
+  it("three independent domains satisfy the strict mode", () => {
+    expect(verifyClaim(claim, [...two, ev(claim, src(3, "nationalgeographic.com", "2026-05-01", 80), p)], { now: NOW, minIndependentDomains: 3 }).status).toBe("verified");
+  });
+  it("a credibility floor rejects weak sources even when the domain count is met", () => {
+    const weak = [ev(claim, src(1, "a.com", "2026-06-01", 80), p), ev(claim, src(2, "b.com", "2026-06-01", 40), p)];
+    const r = verifyClaim(claim, weak, { now: NOW, minVerifiedCredibility: 60 });
+    expect(r.status).toBe("partial"); expect(r.explanation).toMatch(/credibility/);
+    expect(verifyClaim(claim, weak, { now: NOW }).status).toBe("verified");
+  });
+  it("singular wording when exactly one domain supports", () => {
+    expect(verifyClaim(claim, [two[0]], { now: NOW }).explanation).toMatch(/Only 1 independent domain \(britannica.com\) supports this/);
+  });
+});
+
+describe("Maximum Verification mode wiring", () => {
+  it("is a real mode with stricter rules than verify", async () => {
+    const r = await import("../research");
+    expect(r.RESEARCH_MODES).toContain("max_verify");
+    expect(r.MODE_CONFIG.max_verify.strict).toEqual({ minIndependentDomains: 3, minVerifiedCredibility: 55 });
+    expect(r.MODE_CONFIG.verify.strict).toBeUndefined();
+    expect(r.MODE_CONFIG.max_verify.sourceCap).toBeGreaterThan(r.MODE_CONFIG.verify.sourceCap);
+  });
+  it("adds adversarial queries that try to disprove the claim", async () => {
+    const { buildModeQueries } = await import("../research");
+    const q = buildModeQueries("Coffee stunts your growth", "max_verify").join(" | ");
+    expect(q).toMatch(/debunked OR false OR myth/); expect(q).toMatch(/criticism OR disputed/); expect(q).toMatch(/primary source/);
+    expect(buildModeQueries("Coffee stunts your growth", "verify").join(" ")).not.toMatch(/debunked OR false/);
+  });
+});

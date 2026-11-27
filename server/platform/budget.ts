@@ -22,20 +22,22 @@ export function estimateCostUsd(providerModel: string, usage: Usage, prices: Rec
 /** Rough token estimate used only when a provider does not report usage. Flagged as an estimate in the ledger. */
 export function estimateTokens(text: string): number { return Math.ceil((text || "").length / 4); }
 
-export type BudgetPolicy = { dailyTokensPerUser: number; dailyTokensGlobal: number; dailyUsdGlobal: number | null };
-export type BudgetDecision = { allowed: boolean; reason?: "user_tokens" | "global_tokens" | "global_usd"; remainingUserTokens: number };
+export type BudgetPolicy = { dailyTokensPerUser: number; dailyTokensAnonymous: number; dailyTokensGlobal: number; dailyUsdGlobal: number | null };
+export type BudgetDecision = { allowed: boolean; reason?: "user_tokens" | "anonymous_tokens" | "global_tokens" | "global_usd"; remainingUserTokens: number };
 
 export function readBudgetPolicy(env: Record<string, string | undefined> = process.env): BudgetPolicy {
   const num = (v: string | undefined, d: number) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : d; };
   return {
     dailyTokensPerUser: num(env.BUDGET_DAILY_TOKENS_PER_USER, 400_000),
+    dailyTokensAnonymous: num(env.BUDGET_DAILY_TOKENS_ANONYMOUS, 60_000), // all signed-out traffic combined, so a bot cannot drain the budget
     dailyTokensGlobal: num(env.BUDGET_DAILY_TOKENS_GLOBAL, 5_000_000),
     dailyUsdGlobal: env.BUDGET_DAILY_USD_GLOBAL ? num(env.BUDGET_DAILY_USD_GLOBAL, 0) || null : null,
   };
 }
 
-export function evaluateBudget(policy: BudgetPolicy, spent: { userTokens: number; globalTokens: number; globalUsd: number }): BudgetDecision {
+export function evaluateBudget(policy: BudgetPolicy, spent: { userTokens: number; globalTokens: number; globalUsd: number; anonymousTokens?: number }, signedIn = true): BudgetDecision {
   const remainingUserTokens = Math.max(0, policy.dailyTokensPerUser - spent.userTokens);
+  if (!signedIn && (spent.anonymousTokens ?? 0) >= policy.dailyTokensAnonymous) return { allowed: false, reason: "anonymous_tokens", remainingUserTokens: 0 };
   if (spent.userTokens >= policy.dailyTokensPerUser) return { allowed: false, reason: "user_tokens", remainingUserTokens };
   if (spent.globalTokens >= policy.dailyTokensGlobal) return { allowed: false, reason: "global_tokens", remainingUserTokens };
   if (policy.dailyUsdGlobal != null && spent.globalUsd >= policy.dailyUsdGlobal) return { allowed: false, reason: "global_usd", remainingUserTokens };

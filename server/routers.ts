@@ -5,13 +5,14 @@ import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router } from "./_core/trpc";
+import { runWithContext } from "./platform/context";
 import { extractClaims, verifyClaims, type SourceRef } from "./verification/claims";
 import { addContradiction, addClaim, addCitation, addEvidence, addMessage, addPassage, addQuery, addSource, createSession, createCollection, createLocalSession, createLocalUser, deleteCollection, deleteLocalSession, eventMetrics, getSession, getUserByEmail, listCollections, listSessions, matchPassageId, recordEvent, recordResearchFeedback, setSessionCollection, updateSession } from "./db";
 import { LOCAL_SESSION_COOKIE, SESSION_TTL_MS, hashPassword, normalizeEmail, validateEmail, verifyPassword } from "./auth-local";
 import { storagePut } from "./storage";
-import { buildModeQueries, classifyIntent, conductResearch, makeQueries, RESEARCH_MODES } from "./research";
+import { MODE_CONFIG, buildModeQueries, classifyIntent, conductResearch, makeQueries, RESEARCH_MODES } from "./research";
 import { providerRegistry, providerStatuses, providersForIntent } from "./providers/registry";
-import { PostgresRateLimitStore, listAudit, spentToday, writeAudit } from "./db";
+import { PostgresRateLimitStore, listAudit, spentToday, spentTodayAnonymous, writeAudit } from "./db";
 import { MemoryRateLimitStore, callerKey, checkRateLimit, hourlyLimitFor, type RateLimitStore } from "./platform/ratelimit";
 import { evaluateBudget, readBudgetPolicy } from "./platform/budget";
 import { safeEqual } from "./platform/admin-token";
@@ -31,7 +32,7 @@ async function runResearch(id: number, question: string, userId: number | null, 
   try {
     await updateSession(id, { status: "researching" });
     await addMessage(id, "system", "Research started. Progress reflects completed backend actions only.");
-    const result = await conductResearch(question, (progress) => { void addMessage(id, "system", `${progress.stage}: ${progress.detail}`); }, userAttachments, mode);
+    const result = await runWithContext({ userId, sessionId: id }, () => conductResearch(question, (progress) => { void addMessage(id, "system", `${progress.stage}: ${progress.detail}`); }, userAttachments, mode));
     for (const q of result.plan.queries) await addQuery(id, q, result.plan.providers.join(" + "), "searched", result.sources.length);
     const sourceIds: number[] = []; const passageIds: number[][] = [];
     for (const source of result.sources) { const sourceId = await addSource(id, source); sourceIds.push(sourceId); const ids: number[] = []; for (let i = 0; i < source.passages.length; i++) ids.push(await addPassage(sourceId, i, source.passages[i])); passageIds.push(ids); }
@@ -40,7 +41,8 @@ async function runResearch(id: number, question: string, userId: number | null, 
     // Nothing is defaulted to verified, and model agreement is never an input.
     const refs: SourceRef[] = result.sources.map((src, i) => ({ id: i, url: src.canonicalUrl, domain: src.domain, title: src.title, publishedAt: src.published || null, credibility: src.qualityScore ?? 0 }));
     const allPassages = result.sources.flatMap((src, i) => src.passages.map((text) => ({ sourceId: i, text })));
-    const verdicts = verifyClaims(extractClaims(result.answer, 14), refs, allPassages);
+    const strict = MODE_CONFIG[mode]?.strict;
+    const verdicts = verifyClaims(extractClaims(result.answer, 14), refs, allPassages, strict ? { minIndependentDomains: strict.minIndependentDomains, minVerifiedCredibility: strict.minVerifiedCredibility } : {});
     for (const v of verdicts) {
       const claimId = await addClaim(id, v.claim, v.confidence, v.status, v.explanation);
       for (const kind of ["supporting", "contradicting"] as const) {
@@ -81,11 +83,11 @@ async function enforceQuota(ctx: { user: { id: number; role?: string } | null; r
     throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: `Hourly research limit reached. Try again in ${Math.ceil(decision.retryAfterSec / 60)} min${ctx.user ? "" : ", or sign in for a higher limit"}.` });
   }
   const policy = readBudgetPolicy();
-  const [mine, everyone] = await Promise.all([ctx.user ? spentToday(ctx.user.id) : Promise.resolve({ tokens: 0, usd: 0 }), spentToday(null)]);
-  const budget = evaluateBudget(policy, { userTokens: mine.tokens, globalTokens: everyone.tokens, globalUsd: everyone.usd });
+  const [mine, everyone, anon] = await Promise.all([ctx.user ? spentToday(ctx.user.id) : Promise.resolve({ tokens: 0, usd: 0 }), spentToday(null), ctx.user ? Promise.resolve(0) : spentTodayAnonymous()]);
+  const budget = evaluateBudget(policy, { userTokens: mine.tokens, globalTokens: everyone.tokens, globalUsd: everyone.usd, anonymousTokens: anon }, !!ctx.user);
   if (!budget.allowed) {
     void writeAudit({ userId: ctx.user?.id ?? null, action: "budget.blocked", target: key, meta: { reason: budget.reason } });
-    throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: budget.reason === "user_tokens" ? "Your daily usage budget is used up. It resets at 00:00 UTC." : "The service has reached its daily usage budget. Please try again tomorrow." });
+    throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: budget.reason === "user_tokens" ? "Your daily usage budget is used up. It resets at 00:00 UTC." : budget.reason === "anonymous_tokens" ? "The free guest allowance for today is used up. Sign in for your own allowance, or try again after 00:00 UTC." : "The service has reached its daily usage budget. Please try again tomorrow." });
   }
 }
 

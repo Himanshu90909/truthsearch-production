@@ -1,4 +1,8 @@
 import { invokeLLM } from "./_core/llm";
+import { CircuitBreaker, OrchestrationError, ProviderError, orchestrate, type Adapter, type AttemptRecord, type ChatMessage, type ModelTarget } from "./models/orchestrator";
+import { estimateCostUsd } from "./platform/budget";
+import { recordUsage } from "./db";
+import { currentContext } from "./platform/context";
 import { buildPassages, extractPublishedDate, htmlToText } from "./verification/text";
 import { scanForInjection } from "./verification/injection";
 import { crossEncoderRank, denseRank } from "./ml";
@@ -19,19 +23,23 @@ const maxQueries = Math.min(Number(env("MAX_SEARCH_QUERIES") || 8), 20);
 const maxSources = Math.min(Number(env("MAX_SOURCES") || 24), 50);
 
 // Research modes (user-selectable, master-prompt slice: Quick / Deep / Academic / Verify).
-export const RESEARCH_MODES = ["quick", "deep", "academic", "verify", "image"] as const;
+export const RESEARCH_MODES = ["quick", "deep", "academic", "verify", "max_verify", "image"] as const;
 export type ResearchMode = (typeof RESEARCH_MODES)[number];
-export const MODE_CONFIG: Record<ResearchMode, { academicQueries: boolean; sourceCap: number; evidenceCap: number; label: string }> = {
+export const MODE_CONFIG: Record<ResearchMode, { academicQueries: boolean; sourceCap: number; evidenceCap: number; label: string; strict?: { minIndependentDomains: number; minVerifiedCredibility: number } }> = {
   quick: { academicQueries: false, sourceCap: 12, evidenceCap: 8, label: "Quick search" },
   deep: { academicQueries: true, sourceCap: 36, evidenceCap: 14, label: "Deep research" },
   academic: { academicQueries: true, sourceCap: 24, evidenceCap: 12, label: "Academic research" },
   verify: { academicQueries: true, sourceCap: 24, evidenceCap: 12, label: "Fact verification" },
+  // Maximum Verification: more sources, adversarial queries that try to DISPROVE the claim, and stricter rules:
+  // a claim is only verified with 3 independent domains of credibility >= 55 (normal mode needs 2, any credibility).
+  max_verify: { academicQueries: true, sourceCap: 40, evidenceCap: 16, label: "Maximum verification", strict: { minIndependentDomains: 3, minVerifiedCredibility: 55 } },
   image: { academicQueries: false, sourceCap: 0, evidenceCap: 0, label: "Image generation" },
 };
 
 export function buildModeQueries(question: string, mode: ResearchMode): string[] {
   const clean = question.trim();
   const base = makeQueries(clean, MODE_CONFIG[mode].academicQueries);
+  if (mode === "max_verify") return Array.from(new Set([clean, `${clean} — is it true?`, `${clean} fact check evidence`, `${clean} debunked OR false OR myth`, `${clean} criticism OR disputed OR controversy`, `${clean} official statistics OR primary source`, `${clean} latest update ${new Date().getFullYear()}`, ...base])).filter(Boolean).slice(0, Math.min(maxQueries + 4, 14));
   if (mode === "verify") return Array.from(new Set([clean, `${clean} — is it true?`, `${clean} fact check evidence`, `${clean} limitations and disagreement`, ...base])).filter(Boolean).slice(0, maxQueries);
   if (mode === "deep") return Array.from(new Set([...base, `${clean} recent developments`, `${clean} criticisms and limitations`])).slice(0, maxQueries);
   return base;
@@ -659,69 +667,64 @@ async function continueTruncatedAnswer(args: {
   };
 }
 
-export async function callSynthesisLLM(params: Parameters<typeof invokeLLM>[0], kind: "vision" | "code" | "general" = "general"): Promise<Awaited<ReturnType<typeof invokeLLM>>> {
+// One shared breaker for the process: a provider that keeps failing is skipped for a few minutes instead of being
+// retried (and waited on) for every request.
+const synthesisBreaker = new CircuitBreaker(3, 5 * 60_000);
+export function synthesisBreakerState() { return synthesisBreaker.snapshot(); }
+
+type SynthesisCallContext = { userId?: number | null; sessionId?: number | null; requestId?: string | null };
+
+/** The only place that talks to a model API. Everything above it (retry, fallback, deadline, ledger) is the orchestrator. */
+function openAiCompatibleAdapter(providers: ProviderConfig[], params: Parameters<typeof invokeLLM>[0]): Adapter {
+  const byName = new Map(providers.map((p) => [p.name, p]));
+  return async (target, _messages, signal) => {
+    const provider = byName.get(target.provider)!;
+    const res = await fetch(provider.endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${provider.apiKey}` },
+      body: JSON.stringify({ model: target.model, messages: params.messages, temperature: 0.3, max_tokens: provider.maxOutputTokens ?? 4096, ...(provider.extraBody || {}) }),
+      signal,
+    });
+    if (!res.ok) {
+      const detail = (await res.text().catch(() => "")).slice(0, 200);
+      throw new ProviderError(`HTTP ${res.status}: ${detail}`, res.status, [402, 408, 425, 429, 500, 502, 503, 504].includes(res.status));
+    }
+    const data = (await res.json()) as Awaited<ReturnType<typeof invokeLLM>>;
+    const raw = data.choices?.[0]?.message?.content;
+    const content = typeof raw === "string" ? raw : Array.isArray(raw) ? raw.map((part) => (typeof part === "string" ? part : "text" in part ? part.text : "")).join("") : "";
+    // Reasoning models can spend every token on hidden reasoning and return null content: orchestrator treats "" as a failure.
+    return { content, promptTokens: data.usage?.prompt_tokens, completionTokens: data.usage?.completion_tokens, finishReason: data.choices?.[0]?.finish_reason ?? null, raw: data };
+  };
+}
+
+export async function callSynthesisLLM(params: Parameters<typeof invokeLLM>[0], kind: "vision" | "code" | "general" = "general", explicitCtx: SynthesisCallContext = {}): Promise<Awaited<ReturnType<typeof invokeLLM>>> {
+  const ambient = currentContext(); const ctx: SynthesisCallContext = { userId: ambient?.userId, sessionId: ambient?.sessionId, requestId: ambient?.requestId, ...explicitCtx };
   const providers = synthesisProviders();
   if (!providers.length) {
-    throw new Error("Synthesis model is not configured: set NVIDIA_API_KEY, INCEPTION_API_KEY, FREELLMAPI_BASE_URL + FREELLMAPI_API_KEY, HF_API_KEY, GEMINI_API_KEY, or XAI_API_KEY (Groq). No answer was generated.");
+    throw new Error("Synthesis model is not configured: set NVIDIA_API_KEY, INCEPTION_API_KEY, FREELLMAPI_BASE_URL + FREELLMAPI_API_KEY, HF_API_KEY, GEMINI_API_KEY, or XAI_API_KEY (Groq). No answer was generated, and none is fabricated.");
   }
-  const failures: string[] = [];
-  for (const provider of providers) {
-    const candidates = provider.models[kind];
-    for (const model of candidates) {
-      // Keyless gateways (Pollinations) throttle bursts with 402/429, and any
-      // provider can throw a transient 5xx. Retry with backoff before giving
-      // up on a model — a single throttled request must not fail the answer.
-      // Under test, run the retry loop with zero-delay/zero-attempt config so
-      // cascade behavior is exercised deterministically without real sleeps.
-      const RETRY_DELAYS_MS: number[] = process.env.NODE_ENV === "test" ? [] : [5000, 15000, 30000];
-      for (let attempt = 0; ; attempt++) {
-        try {
-          const res = await fetch(provider.endpoint, {
-            method: "POST",
-            headers: { "content-type": "application/json", authorization: `Bearer ${provider.apiKey}` },
-            body: JSON.stringify({
-              model,
-              messages: params.messages,
-              temperature: 0.3,
-              max_tokens: provider.maxOutputTokens ?? 4096,
-              ...(provider.extraBody || {}),
-            }),
-            signal: AbortSignal.timeout(Math.max(timeoutMs, 120000)),
-          });
-          if (!res.ok) {
-            const detail = (await res.text().catch(() => "")).slice(0, 200);
-            const transient = [402, 408, 425, 429, 500, 502, 503, 504].includes(res.status);
-            if (transient && attempt < RETRY_DELAYS_MS.length) {
-              failures.push(`${provider.name}/${model} returned HTTP ${res.status} (attempt ${attempt + 1}) — retrying in ${RETRY_DELAYS_MS[attempt] / 1000}s`);
-              await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
-              continue;
-            }
-            failures.push(`${provider.name}/${model} returned HTTP ${res.status}: ${detail}`);
-            break;
-          }
-          const data = (await res.json()) as Awaited<ReturnType<typeof invokeLLM>>;
-          const rawContent = data.choices?.[0]?.message?.content;
-          const content = typeof rawContent === "string" ? rawContent : Array.isArray(rawContent) ? rawContent.map((part) => typeof part === "string" ? part : "text" in part ? part.text : "").join("") : "";
-          if (!content.trim()) {
-            // Reasoning models can exhaust tokens on hidden reasoning and return null content — cascade instead of answering blank.
-            failures.push(`${provider.name}/${model} returned an empty answer (reasoning did not complete)`);
-            break;
-          }
-          return await continueTruncatedAnswer({ provider, model, params, kind, data, content });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "request failed";
-          if (attempt < RETRY_DELAYS_MS.length) {
-            failures.push(`${provider.name}/${model}: ${message} (attempt ${attempt + 1}) — retrying in ${RETRY_DELAYS_MS[attempt] / 1000}s`);
-            await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
-            continue;
-          }
-          failures.push(`${provider.name}/${model}: ${message}`);
-          break;
-        }
-      }
-    }
+  const targets: ModelTarget[] = providers.flatMap((p) => p.models[kind].map((model) => ({ provider: p.name, model, maxOutputTokens: p.maxOutputTokens })));
+  const inTest = process.env.NODE_ENV === "test";
+  // The whole call (every retry and fallback) must fit inside the serverless budget. Without a deadline a slow first
+  // provider could consume the entire function time and the fallbacks would never run.
+  const deadlineMs = Number(env("SYNTHESIS_DEADLINE_MS")) || (process.env.VERCEL === "1" ? 55_000 : 170_000);
+  const record = async (a: AttemptRecord) => {
+    const price = a.status === "ok" ? estimateCostUsd(`${a.provider}/${a.model}`, { promptTokens: a.promptTokens ?? 0, completionTokens: a.completionTokens ?? 0 }) : null;
+    await recordUsage({ userId: ctx.userId ?? null, sessionId: ctx.sessionId ?? null, kind, provider: a.provider, model: a.model, promptTokens: a.promptTokens ?? null, completionTokens: a.completionTokens ?? null, tokensEstimated: a.tokensEstimated, costUsd: price, latencyMs: a.latencyMs, status: a.status === "ok" ? "ok" : a.status === "timeout" ? "timeout" : "error", error: a.error ?? null, requestId: ctx.requestId ?? null }).catch(() => {});
+  };
+  try {
+    const result = await orchestrate(openAiCompatibleAdapter(providers, params), targets, params.messages as ChatMessage[], {
+      deadlineMs, perAttemptTimeoutMs: Number(env("SYNTHESIS_ATTEMPT_TIMEOUT_MS")) || 60_000,
+      retryDelaysMs: inTest ? [] : [3000, 8000], minUsefulMs: inTest ? 0 : 4000, breaker: inTest ? undefined : synthesisBreaker, record,
+    });
+    const provider = providers.find((p) => p.name === result.target.provider)!;
+    // Rebuild the OpenAI-shaped response (the orchestrator is provider-neutral) and keep the truncation-continuation behaviour.
+    const base = { choices: [{ index: 0, message: { role: "assistant", content: result.content }, finish_reason: result.finishReason ?? "stop" }], usage: { prompt_tokens: result.promptTokens ?? 0, completion_tokens: result.completionTokens ?? 0, total_tokens: (result.promptTokens ?? 0) + (result.completionTokens ?? 0) }, model: result.target.model } as unknown as Awaited<ReturnType<typeof invokeLLM>>;
+    return await continueTruncatedAnswer({ provider, model: result.target.model, params, kind, data: base, content: result.content });
+  } catch (error) {
+    if (error instanceof OrchestrationError) throw new Error(`All synthesis providers failed for this ${kind} question: ${error.message}`);
+    throw error;
   }
-  throw new Error(`All synthesis providers failed for this ${kind} question: ${failures.join("; ")}`);
 }
 
 // Summarize page-fetch failures so operators can see WHY sources were dropped
