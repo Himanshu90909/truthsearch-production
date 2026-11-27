@@ -7,6 +7,7 @@
 // module exporting an HTTP handler that lazily creates the Express app on the
 // first request (keeps cold starts fast when unused).
 import { createApp } from "../server/_core/app";
+import { keyBelongsTo, webSearchChain } from "../server/search/chain";
 import type { Request, Response } from "express";
 
 let cachedApp: ReturnType<typeof createApp> | null = null;
@@ -37,6 +38,16 @@ function diagnostics(req: Request, res: Response): boolean {
       freellmapiKey: Boolean(process.env.FREELLMAPI_BASE_URL && process.env.FREELLMAPI_API_KEY),
       freellmapiBase: process.env.FREELLMAPI_BASE_URL || null,
       sync: process.env.SYNC_RESEARCH === "true" || process.env.VERCEL === "1",
+      // Which web-search providers will actually be used, in order. Names only, never key values. If a key is saved
+      // under the wrong variable name it is missing from this list, which makes that mistake visible without a dashboard.
+      searchChain: webSearchChain(process.env),
+      searchKeyNames: {
+        TAVILY_API_KEY: Boolean(process.env.TAVILY_API_KEY), FIRECRAWL_API_KEY: Boolean(process.env.FIRECRAWL_API_KEY),
+        BRAVE_SEARCH_API_KEY: Boolean(process.env.BRAVE_SEARCH_API_KEY), BRAVE_API_KEY: Boolean(process.env.BRAVE_API_KEY),
+      },
+      searchKeyWarnings: (["TAVILY_API_KEY", "FIRECRAWL_API_KEY", "BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"] as const)
+        .filter((n) => process.env[n] && keyBelongsTo(process.env[n]) !== "unknown" && keyBelongsTo(process.env[n]) !== ({ TAVILY_API_KEY: "tavily", FIRECRAWL_API_KEY: "firecrawl", BRAVE_SEARCH_API_KEY: "brave", BRAVE_API_KEY: "brave" } as const)[n])
+        .map((n) => `${n} holds a ${keyBelongsTo(process.env[n])} key`),
     });
     return true;
   }
