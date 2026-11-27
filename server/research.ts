@@ -5,6 +5,7 @@ import { recordUsage } from "./db";
 import { currentContext } from "./platform/context";
 import { buildPassages, extractPublishedDate, htmlToText } from "./verification/text";
 import { isTimeSensitive } from "./verification/claims";
+import { keyBelongsTo, webSearchChain, type WebProvider } from "./search/chain";
 import { classifyPublisher, credibilityScore, dedupeSources, rankScore } from "./search/ranking";
 import { searchWithFallback, type SearchAttempt } from "./search/fallback";
 import { scanForInjection } from "./verification/injection";
@@ -19,6 +20,7 @@ export type ProviderName = "duckDuckGo" | "brave" | "tavily" | "semanticScholar"
 export type ResearchProgress = { stage: string; detail: string; at: number };
 export type SearchHit = { title: string; url: string; snippet: string; published?: string; author?: string; provider: ProviderName };
 export type SourceRecord = SearchHit & { canonicalUrl: string; domain: string; sourceType: string; qualityScore: number; content: string; passages: string[]; relevance?: number };
+export type RetrievalSummary = { searched: number; uniqueResults: number; unreadable: number; failureSummary: string; providers: string[]; fallbackAttempts: SearchAttempt[]; duplicatesCollapsed: number };
 export type EvidenceRecord = { claim: string; quote: string; url: string; title: string; supportScore: number; qualityScore: number; sourceId: number };
 
 const env = (key: string) => process.env[key]?.trim();
@@ -202,7 +204,10 @@ export async function searchProvider(provider: ProviderName, query: string): Pro
     return entries.map((entry) => ({ title: between(entry, "<title>", "</title>") || `arXiv result for ${query}`, url: between(entry, "<id>", "</id>") || `https://arxiv.org/search/?query=${encodeURIComponent(query)}&searchtype=all`, snippet: between(entry, "<summary>", "</summary>"), published: between(entry, "<published>", "</published>"), provider }));
   }
   if (provider === "brave") {
-    const key = env("BRAVE_SEARCH_API_KEY");
+    // BRAVE_API_KEY is accepted as an alias, but only if it really looks like a Brave key: a Tavily key saved under that
+    // name must never be sent to Brave (it would be disclosed to the wrong company and rejected with HTTP 422).
+    const aliasKey = env("BRAVE_API_KEY");
+    const key = env("BRAVE_SEARCH_API_KEY") || (aliasKey && keyBelongsTo(aliasKey) !== "tavily" ? aliasKey : undefined);
     if (!key) throw new Error("Brave Search is unavailable: BRAVE_SEARCH_API_KEY is not configured.");
     const data = await requestJson(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=10`, { headers: { "X-Subscription-Token": key } });
     return (data.web?.results || []).map((x: any) => ({ title: x.title, url: x.url, snippet: x.description || "", published: x.age, provider }));
@@ -968,7 +973,7 @@ async function answerDirectly(question: string, userAttachments: UserAttachments
   return {
     answer: finalAnswer,
     plan: { question, queries: [question], mode, modeLabel: MODE_CONFIG[mode].label, claimStatuses: [] as ClaimStatus[], claimSummary: { verified: 0, partial: 0, conflicting: 0, insufficient: 0 }, providers: [], bounded: true, evidence: [], conflicts: [], citationAudit: { invalidReferences: [] as number[] }, answerProvenance: "model_knowledge" as const },
-    sources: [], evidence: [], conflicts: [], citationAudit: { invalidReferences: [] as number[] }, progress: [] as ResearchProgress[],
+    sources: [], allSources: [] as SourceRecord[], retrieval: null as null | RetrievalSummary, evidence: [], conflicts: [], citationAudit: { invalidReferences: [] as number[] }, progress: [] as ResearchProgress[],
   };
 }
 
@@ -1001,7 +1006,7 @@ export async function conductResearch(question: string, onProgress: (p: Research
     return {
       answer,
       plan: { question, queries: [generated.prompt], mode, modeLabel: MODE_CONFIG.image.label, claimStatuses: [] as ClaimStatus[], claimSummary: { verified: 0, partial: 0, conflicting: 0, insufficient: 0 }, providers: [generated.provider], bounded: true, evidence: [], conflicts: [], citationAudit: { invalidReferences: [] as number[] }, answerProvenance: "model_knowledge" as const },
-      sources: [], evidence: [], conflicts: [], citationAudit: { invalidReferences: [] as number[] }, progress: [] as ResearchProgress[],
+      sources: [], allSources: [] as SourceRecord[], retrieval: null as null | RetrievalSummary, evidence: [], conflicts: [], citationAudit: { invalidReferences: [] as number[] }, progress: [] as ResearchProgress[],
     };
   }
   // Intelligent tool router: questions that need no external evidence skip
@@ -1012,9 +1017,10 @@ export async function conductResearch(question: string, onProgress: (p: Research
   if (!needsExternalEvidence(question, mode, userAttachments)) {
     return answerDirectly(question, userAttachments, mode, intent, onProgress);
   }
-  const requested = env("SEARCH_PROVIDER");
-  const paidEnabled = env("ENABLE_PAID_SEARCH") === "true";
-  const primary = (paidEnabled && (requested === "brave" || requested === "tavily") ? requested : "duckDuckGo") as ProviderName;
+  // A configured Tavily/Brave key is used automatically and preferred over the keyless DuckDuckGo scraper. ENABLE_PAID_SEARCH=false
+  // is still honoured as an explicit opt-out so paid providers are never called against the owner's wishes.
+  const webChain = env("ENABLE_PAID_SEARCH") === "false" ? (["duckDuckGo"] as WebProvider[]) : webSearchChain(process.env);
+  const primary = webChain[0] as ProviderName;
   const academic = (env("ACADEMIC_SEARCH_PROVIDER") || "arxiv") as ProviderName;
   const extraProviders = providersForIntent(intent) as ProviderName[];
   onProgress({ stage: "planning", detail: `Bounded research plan created for ${intent.replace("_", " ")} intent`, at: Date.now() });
@@ -1031,7 +1037,13 @@ export async function conductResearch(question: string, onProgress: (p: Research
   // random papers and drown the answer in off-topic abstracts — so web-type
   // intents route every query to the general-web provider instead.
   const academicIntent = mode === "academic" || intent === "academic_research";
-  const planned = queries.map((q, i) => ({ q, provider: academicIntent ? freeAcademic[i % freeAcademic.length] : i === 0 ? primary : i < 6 ? (primary === "duckDuckGo" ? primary : freeAcademic[(i - 1) % freeAcademic.length]) : extraProviders[(i - 6) % Math.max(extraProviders.length, 1)] || "wikidata" }));
+  // A keyed web provider (Tavily/Brave) is reliable and allows several queries, so for general questions it receives the
+  // first few query variants, including the adversarial "debunked / disputed / official source" ones. Sending those to
+  // academic providers returned off-topic papers. The keyless DuckDuckGo scraper keeps its single-query policy (it is
+  // rate-limited), and academic intent still routes to academic providers.
+  const keyedWeb = primary !== "duckDuckGo";
+  const webQueryCount = keyedWeb ? Math.min(queries.length, mode === "max_verify" ? 5 : mode === "deep" || mode === "verify" ? 4 : 2) : 1;
+  const planned = queries.map((q, i) => ({ q, provider: academicIntent ? freeAcademic[i % freeAcademic.length] : i < webQueryCount ? primary : i < 6 ? (primary === "duckDuckGo" ? primary : freeAcademic[(i - webQueryCount) % freeAcademic.length]) : extraProviders[(i - 6) % Math.max(extraProviders.length, 1)] || "wikidata" }));
   const settled = (!academicIntent && primary === "duckDuckGo")
     ? await runSerializedWebQueries(planned)
     : await Promise.allSettled(planned.map(({ q, provider }) => searchProvider(provider, q)));
@@ -1042,7 +1054,7 @@ export async function conductResearch(question: string, onProgress: (p: Research
   if (!hits.length) {
     // The planned providers returned nothing. Walk an ordered fallback chain instead of giving up, and report every
     // attempt so the answer's methodology shows exactly what was tried.
-    const chain = Array.from(new Set<ProviderName>(["wikipedia", "openalex", "crossref", "europePmc", "wikidata"])).filter((p) => p !== primary) as ProviderName[];
+    const chain = Array.from(new Set<ProviderName>([...(webChain.slice(1) as ProviderName[]), "wikipedia", "openalex", "crossref", "europePmc", "wikidata"])).filter((p) => p !== primary) as ProviderName[];
     onProgress({ stage: "provider-warning", detail: `Primary search returned no results; trying fallback providers (${chain.join(", ")})`, at: Date.now() });
     const fb = await searchWithFallback<SearchHit>((p, q) => searchProvider(p as ProviderName, q), chain, compactFallbackQuery(queries[0]), { perProviderTimeoutMs: 10_000, breaker: searchBreaker });
     hits = fb.hits;
@@ -1175,5 +1187,9 @@ export async function conductResearch(question: string, onProgress: (p: Research
   onProgress({ stage: "completed", detail: evidence.length ? `Citations verified against retrieved URLs (${answerProvenance === "technical_direct" ? "technical question — answered with model expertise plus evidence" : "evidence-backed"})` : "Answered from model knowledge (labeled)", at: Date.now() });
   const citedSourceIds = new Set(evidence.map((e) => e.sourceId));
   const citedSources = sources.filter((_, sourceId) => citedSourceIds.has(sourceId));
-  return { answer: finalAnswer, plan: { question, queries, mode, modeLabel: modeCfg.label, claimStatuses, claimSummary: { verified: claimStatuses.filter((x) => x === "verified").length, partial: claimStatuses.filter((x) => x === "partial").length, conflicting: claimStatuses.filter((x) => x === "conflicting").length, insufficient: evidence.length ? 0 : 1 }, providers: Array.from(new Set(planned.map((x) => x.provider))), bounded: true, evidence, conflicts, citationAudit, answerProvenance }, sources: citedSources, evidence, conflicts, citationAudit, progress: [] as ResearchProgress[] };
+  return { answer: finalAnswer, plan: { question, queries, mode, modeLabel: modeCfg.label, claimStatuses, claimSummary: { verified: claimStatuses.filter((x) => x === "verified").length, partial: claimStatuses.filter((x) => x === "partial").length, conflicting: claimStatuses.filter((x) => x === "conflicting").length, insufficient: evidence.length ? 0 : 1 }, providers: Array.from(new Set(planned.map((x) => x.provider))), bounded: true, evidence, conflicts, citationAudit, answerProvenance }, sources: citedSources, // cited only: evidence.sourceId indexes into THIS list (existing contract, unchanged)
+    // Everything that was actually read, for claim verification and the Browser Intelligence view. Verifying only against
+    // the few cited passages meant a claim could never reach two independent domains.
+    allSources: sources, retrieval: { searched: planned.length, uniqueResults: unique.length, unreadable: fetchFailures.length, failureSummary: summarizeFetchFailures(fetchFailures), providers: Array.from(new Set(planned.map((x) => x.provider))), fallbackAttempts: searchAttempts, duplicatesCollapsed: deduped.dropped.length },
+    evidence, conflicts, citationAudit, progress: [] as ResearchProgress[] };
 }

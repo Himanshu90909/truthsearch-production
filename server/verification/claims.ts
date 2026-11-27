@@ -95,6 +95,17 @@ export function extractQuantities(text: string): Quantity[] {
   return out;
 }
 
+// A negation only flips a sentence when it applies to the sentence's MAIN statement. Negations inside a relative or
+// subordinate clause ("the first CEO who is neither a founder nor an employee", "although it was not profitable",
+// quoted titles such as "Never Stop Learning") describe something else and are removed before looking for polarity.
+export function mainClauseNegates(sentence: string): boolean {
+  const cleaned = sentence
+    .replace(/["\u201C][^"\u201D]{0,120}["\u201D]/g, " ")                                   // quoted titles and quotations
+    .replace(/^\s*(although|though|while|whereas|because|since|if|unless|when|even though)\b[^,]*,/i, " ")                  // a leading subordinate clause: "Although it was not X, ..."
+    .replace(/,?\s+\b(who|whom|whose|which|where|although|though|while|whereas|because|since|if|unless|when)\b[^,.;]*/gi, " ") // trailing relative / subordinate clauses
+    .replace(/\b(neither|nor)\b[^,.;]*/gi, " ");                                            // neither ... nor ... lists
+  return NEGATION.test(cleaned);
+}
 const NEGATION = /\b(not|no|never|none|neither|without|fails? to|did not|does not|is not|was not|cannot|can't|isn't|wasn't|false|incorrect|debunked|myth|disproven)\b/i;
 const CONTENT_WORD = /[a-z]{4,}/g;
 const STOP = new Set(["that", "this", "with", "from", "have", "were", "been", "their", "which", "there", "about", "would", "could", "than", "then", "also", "into", "over", "after", "before", "more", "most", "some", "such"]);
@@ -116,7 +127,7 @@ export function judgeStance(claim: string, passage: string): { stance: Stance; r
   const split = splitSentences(passage);
   const sentences = (split.length ? split : [passage]).filter((x) => !isBoilerplate(x)); // whole passage only when it could not be split
   let best: { stance: Stance; relevance: number; reason: string } | null = null;
-  const cq = extractQuantities(claim); const cNeg = NEGATION.test(claim);
+  const cq = extractQuantities(claim); const cNeg = mainClauseNegates(claim);
   for (const sent of sentences) {
     const sk = keywords(sent); const rel = Math.round(overlap(ck, sk) * 100);
     if (rel < 50) continue;                                    // this sentence is not about the claim
@@ -131,7 +142,7 @@ export function judgeStance(claim: string, passage: string): { stance: Stance; r
       else if (cq.some((c) => pq.some((p) => c.unit === p.unit))) verdict = { stance: "contradicts", reason: `figures differ by more than 15% (${cq[0].value} vs ${pq[0].value})` };
     }
     if (!verdict) {
-      const pNeg = NEGATION.test(sent);
+      const pNeg = mainClauseNegates(sent);
       if (cNeg !== pNeg && rel >= 65) verdict = { stance: "contradicts", reason: "opposite polarity in a sentence about the same subject" };
       else if (rel >= 55) verdict = { stance: "supports", reason: "a sentence states the same thing" };
     }

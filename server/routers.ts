@@ -34,20 +34,24 @@ async function runResearch(id: number, question: string, userId: number | null, 
     await addMessage(id, "system", "Research started. Progress reflects completed backend actions only.");
     const result = await runWithContext({ userId, sessionId: id }, () => conductResearch(question, (progress) => { void addMessage(id, "system", `${progress.stage}: ${progress.detail}`); }, userAttachments, mode));
     for (const q of result.plan.queries) await addQuery(id, q, result.plan.providers.join(" + "), "searched", result.sources.length);
+    // Save every source that was actually read (not only cited ones) so Browser Intelligence and claim verification
+    // have the full picture. `pool` index == position in sourceIds/passageIds.
+    const pool = result.allSources?.length ? result.allSources : result.sources;
     const sourceIds: number[] = []; const passageIds: number[][] = [];
-    for (const source of result.sources) { const sourceId = await addSource(id, source); sourceIds.push(sourceId); const ids: number[] = []; for (let i = 0; i < source.passages.length; i++) ids.push(await addPassage(sourceId, i, source.passages[i])); passageIds.push(ids); }
+    for (const source of pool) { const sourceId = await addSource(id, source); sourceIds.push(sourceId); const ids: number[] = []; for (let i = 0; i < source.passages.length; i++) ids.push(await addPassage(sourceId, i, source.passages[i])); passageIds.push(ids); }
     // Claim-level verification (spec D). Claims come from the ANSWER the user reads; each is checked against the
     // retrieved passages. A claim is "verified" only with >= 2 independent domains and no credible contradiction.
     // Nothing is defaulted to verified, and model agreement is never an input.
-    const refs: SourceRef[] = result.sources.map((src, i) => ({ id: i, url: src.canonicalUrl, domain: src.domain, title: src.title, publishedAt: src.published || null, credibility: src.qualityScore ?? 0 }));
-    const allPassages = result.sources.flatMap((src, i) => src.passages.map((text) => ({ sourceId: i, text })));
+    // Verify against EVERY source that was read, not only the few that were cited in the answer.
+    const refs: SourceRef[] = pool.map((src, i) => ({ id: i, url: src.canonicalUrl, domain: src.domain, title: src.title, publishedAt: src.published || null, credibility: src.qualityScore ?? 0 }));
+    const allPassages = pool.flatMap((src, i) => src.passages.map((text) => ({ sourceId: i, text })));
     const strict = MODE_CONFIG[mode]?.strict;
     const verdicts = verifyClaims(extractClaims(result.answer, 14), refs, allPassages, strict ? { minIndependentDomains: strict.minIndependentDomains, minVerifiedCredibility: strict.minVerifiedCredibility } : {});
     for (const v of verdicts) {
       const claimId = await addClaim(id, v.claim, v.confidence, v.status, v.explanation);
       for (const kind of ["supporting", "contradicting"] as const) {
         for (const e of v[kind].slice(0, 3)) {
-          const sourceId = sourceIds[e.source.id] || 0; const passageId = matchPassageId(result.sources[e.source.id]?.passages || [], e.passage, passageIds[e.source.id] || []);
+          const sourceId = sourceIds[e.source.id] || 0; const passageId = matchPassageId(pool[e.source.id]?.passages || [], e.passage, passageIds[e.source.id] || []);
           if (kind === "supporting" && passageId && sourceId) { await addEvidence(claimId, passageId, e.passage, e.relevance); await addCitation(claimId, sourceId, true); }
           if (kind === "contradicting" && sourceId) { await addContradiction(id, claimId, `${e.source.domain}: ${e.passage.slice(0, 280)}`, [sourceId]); }
         }

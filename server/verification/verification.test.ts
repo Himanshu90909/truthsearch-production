@@ -242,3 +242,26 @@ describe("Maximum Verification mode wiring", () => {
     expect(buildModeQueries("Coffee stunts your growth", "verify").join(" ")).not.toMatch(/debunked OR false/);
   });
 });
+
+import { mainClauseNegates } from "./claims";
+describe("negation only counts in the main clause (regression: ebsco 'first CEO who is neither a founder nor an employee')", () => {
+  const claim = "Microsoft's current CEO is Satya Nadella.";
+  it("ignores negation inside a relative clause", () => {
+    expect(mainClauseNegates("Nadella is notable for being the first CEO of Microsoft who is neither a founder nor an original employee.")).toBe(false);
+    expect(mainClauseNegates("Satya Nadella was the first CEO of Microsoft who was not a founder or original employee.")).toBe(false);
+  });
+  it("ignores negation in quoted titles and subordinate clauses", () => {
+    expect(mainClauseNegates("\"Never, Ever Stop Learning\": Satya Nadella is the CEO of Microsoft.")).toBe(false);
+    expect(mainClauseNegates("Although the phone business was not profitable, Nadella remains the CEO of Microsoft.")).toBe(false);
+  });
+  it("still sees a negation of the main statement", () => {
+    expect(mainClauseNegates("Satya Nadella is not the CEO of Microsoft any more.")).toBe(true);
+    expect(mainClauseNegates("The vaccine does not cause autism.")).toBe(true);
+  });
+  it("a supporting sentence with a negated relative clause is not a contradiction", () => {
+    expect(judgeStance(claim, "Satya Nadella is the first CEO of Microsoft who is neither a founder nor an original employee, and he leads the company today as its current CEO.").stance).not.toBe("contradicts");
+  });
+  it("a real denial about the same subject still contradicts", () => {
+    expect(judgeStance(claim, "Satya Nadella is not the current CEO of Microsoft, the company confirmed on Monday.").stance).toBe("contradicts");
+  });
+});
