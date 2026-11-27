@@ -4,6 +4,9 @@ import { estimateCostUsd } from "./platform/budget";
 import { recordUsage } from "./db";
 import { currentContext } from "./platform/context";
 import { buildPassages, extractPublishedDate, htmlToText } from "./verification/text";
+import { isTimeSensitive } from "./verification/claims";
+import { classifyPublisher, credibilityScore, dedupeSources, rankScore } from "./search/ranking";
+import { searchWithFallback, type SearchAttempt } from "./search/fallback";
 import { scanForInjection } from "./verification/injection";
 import { crossEncoderRank, denseRank } from "./ml";
 import { analyzeImageFromUrl } from "./visual/analysis";
@@ -220,11 +223,15 @@ export async function searchProvider(provider: ProviderName, query: string): Pro
 
 export function classifySource(domain: string, provider: ProviderName): string {
   if (["semanticScholar", "crossref", "openalex", "europePmc", "arxiv"].includes(provider)) return "Academic Paper";
-  if (/\.gov$|\.gov\./.test(domain)) return "Government";
-  if (/docs\.|developer\./.test(domain)) return "Official Documentation";
-  if (/arxiv\.org|deepmind|openai|anthropic|microsoft\.com/.test(domain)) return "Research Organization";
-  if (/nytimes|reuters|bbc|apnews|theguardian/.test(domain)) return "Reputable News";
-  if (/medium|substack|blog/.test(domain)) return "Personal or Company Blog";
+  const kind = classifyPublisher(domain);
+  if (kind === "government") return "Government";
+  if (kind === "company_docs") return "Official Documentation";
+  if (kind === "academic_publisher") return "Academic Publisher";
+  if (kind === "international_org") return "International Organisation";
+  if (kind === "major_news") return "Reputable News";
+  if (kind === "reference") return "Reference";
+  if (kind === "blog_or_social") return "Personal or Company Blog";
+  if (kind === "aggregator") return "Aggregator";
   return "Web Source";
 }
 
@@ -274,12 +281,8 @@ export function queryContentRelevance(query: string, content: string): number {
 }
 
 export function scoreSource(hit: SearchHit, domain: string, relevance = 0): number {
-  let score = 30 + Math.round(Math.min(relevance, 5) * 6);
-  if (hit.provider === "semanticScholar" || hit.provider === "crossref" || hit.provider === "arxiv" || hit.provider === "openalex" || hit.provider === "europePmc") score += 20;
-  if (/\.gov$|\.edu$|docs\.|developer\./.test(domain)) score += 14;
-  if (hit.author) score += 3;
-  if (hit.published) score += 2;
-  return Math.max(5, Math.min(score, 98));
+  const peerReviewed = ["semanticScholar", "crossref", "arxiv", "openalex", "europePmc"].includes(hit.provider);
+  return credibilityScore(domain, { hasAuthor: !!hit.author, hasDate: !!hit.published, isPeerReviewedProvider: peerReviewed, relevance }).score;
 }
 
 // ---------------------------------------------------------------------------
@@ -670,6 +673,7 @@ async function continueTruncatedAnswer(args: {
 // One shared breaker for the process: a provider that keeps failing is skipped for a few minutes instead of being
 // retried (and waited on) for every request.
 const synthesisBreaker = new CircuitBreaker(3, 5 * 60_000);
+const searchBreaker = new CircuitBreaker(3, 3 * 60_000);
 export function synthesisBreakerState() { return synthesisBreaker.snapshot(); }
 
 type SynthesisCallContext = { userId?: number | null; sessionId?: number | null; requestId?: string | null };
@@ -1034,14 +1038,26 @@ export async function conductResearch(question: string, onProgress: (p: Research
   const failures = settled.filter((x): x is PromiseRejectedResult => x.status === "rejected").map((x) => x.reason instanceof Error ? x.reason.message : "Provider failed");
   if (failures.length) onProgress({ stage: "provider-warning", detail: `${failures.length} provider request(s) unavailable; continuing only with completed live results`, at: Date.now() });
   let hits = settled.filter((x): x is PromiseFulfilledResult<SearchHit[]> => x.status === "fulfilled").flatMap((x) => x.value);
-  if (primary === "duckDuckGo" && !hits.length) {
-    // Keyless web search came back empty — fall back to the Wikipedia API so
-    // the research still has live sources.
-    onProgress({ stage: "provider-warning", detail: "Keyless web search returned no results; falling back to Wikipedia search", at: Date.now() });
-    try { hits = await searchProvider("wikipedia", compactFallbackQuery(queries[0])); } catch { hits = []; }
+  const searchAttempts: SearchAttempt[] = []; // per request: never shared between users or runs
+  if (!hits.length) {
+    // The planned providers returned nothing. Walk an ordered fallback chain instead of giving up, and report every
+    // attempt so the answer's methodology shows exactly what was tried.
+    const chain = Array.from(new Set<ProviderName>(["wikipedia", "openalex", "crossref", "europePmc", "wikidata"])).filter((p) => p !== primary) as ProviderName[];
+    onProgress({ stage: "provider-warning", detail: `Primary search returned no results; trying fallback providers (${chain.join(", ")})`, at: Date.now() });
+    const fb = await searchWithFallback<SearchHit>((p, q) => searchProvider(p as ProviderName, q), chain, compactFallbackQuery(queries[0]), { perProviderTimeoutMs: 10_000, breaker: searchBreaker });
+    hits = fb.hits;
+    searchAttempts.push(...fb.attempts);
+    onProgress({ stage: "provider-warning", detail: fb.provider ? `Fallback succeeded via ${fb.provider} after ${fb.attempts.length} attempt(s)` : `All ${fb.attempts.length} fallback providers failed or were empty: ${fb.attempts.map((a) => `${a.provider}${a.error ? ` (${a.error})` : " (no results)"}`).join(", ")}`, at: Date.now() });
   }
   if (!hits.length) onProgress({ stage: "provider-warning", detail: `All live providers were unavailable (${failures.join("; ") || "no results"}). The model will answer from its own knowledge, clearly labeled.`, at: Date.now() });
-  const unique = Array.from(new Map(hits.filter((x) => x.url).map((x) => { try { return [canonicalizeUrl(x.url), x] as const; } catch { return [x.url, x] as const; } })).values()).slice(0, Math.min(modeCfg.sourceCap, maxSources));
+  // Rank by publisher credibility (and freshness for time-sensitive questions) BEFORE capping, so the cap keeps the best
+  // sources instead of whichever arrived first. Syndicated copies of one story collapse to the best copy, so they
+  // cannot be counted as several independent sources.
+  const sensitive = isTimeSensitive(question);
+  const hitRank = (h: SearchHit) => { let host = ""; try { host = new URL(h.url).hostname; } catch { /* ignore */ } return rankScore(scoreSource(h, host, 0), h.published, sensitive); };
+  const deduped = dedupeSources(hits.filter((x) => x.url), hitRank, canonicalizeUrl);
+  if (deduped.dropped.length) onProgress({ stage: "deduplicating", detail: `Collapsed ${deduped.dropped.length} duplicate result(s) (${Array.from(new Set(deduped.dropped.map((d) => d.reason))).join("; ")})`, at: Date.now() });
+  const unique = deduped.kept.slice(0, Math.min(modeCfg.sourceCap, maxSources));
   onProgress({ stage: "fetching", detail: `Fetched ${unique.length} unique live search results; normalizing permitted public pages`, at: Date.now() });
   const fetchFailures: string[] = [];
   const fetchedPages = (await Promise.all(unique.map((hit) => fetchReadable(hit, question, fetchFailures)))).filter(Boolean) as FetchedPage[];
