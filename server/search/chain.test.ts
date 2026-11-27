@@ -36,3 +36,36 @@ describe("searchProvider refuses to send a mis-saved key to the wrong provider",
     finally { globalThis.fetch = realFetch; if (saved.a) process.env.BRAVE_SEARCH_API_KEY = saved.a; if (saved.b) process.env.BRAVE_API_KEY = saved.b; else delete process.env.BRAVE_API_KEY; }
   });
 });
+
+import { resolveProviderKey } from "./chain";
+describe("swapped keys (the exact situation seen in testing)", () => {
+  const FC = "fc-0123456789abcdef0123456789abcdef"; const TV = "tvly-dev-abcdefghij0123456789";
+  it("a Firecrawl key saved as TAVILY_API_KEY is never offered to Tavily, but Firecrawl can still use it", () => {
+    const env = { TAVILY_API_KEY: FC };
+    expect(webSearchChain(env)).not.toContain("tavily");
+    expect(resolveProviderKey(env, "tavily")).toBeUndefined();
+  });
+  it("a Tavily key saved as BRAVE_API_KEY is never offered to Brave", () => {
+    expect(webSearchChain({ BRAVE_API_KEY: TV })).not.toContain("brave"); expect(resolveProviderKey({ BRAVE_API_KEY: TV }, "brave")).toBeUndefined();
+  });
+  it("correctly named keys give tavily, firecrawl, then duckduckgo", () => {
+    expect(webSearchChain({ TAVILY_API_KEY: TV, FIRECRAWL_API_KEY: FC })).toEqual(["tavily", "firecrawl", "duckDuckGo"]);
+  });
+  it("keyBelongsTo recognises all three formats", () => {
+    expect(keyBelongsTo(FC)).toBe("firecrawl"); expect(keyBelongsTo(TV)).toBe("tavily"); expect(keyBelongsTo("BSAabcdefghijkl")).toBe("brave");
+  });
+  it("searchProvider('tavily') makes no network call with a Firecrawl-shaped key", async () => {
+    const { searchProvider } = await import("../research");
+    const saved = process.env.TAVILY_API_KEY; process.env.TAVILY_API_KEY = FC;
+    const real = globalThis.fetch; let called = false; globalThis.fetch = (async () => { called = true; return new Response("{}"); }) as typeof fetch;
+    try { await expect(searchProvider("tavily", "test query")).rejects.toThrow(/another provider|not configured/); expect(called).toBe(false); }
+    finally { globalThis.fetch = real; if (saved) process.env.TAVILY_API_KEY = saved; else delete process.env.TAVILY_API_KEY; }
+  });
+  it("searchProvider('firecrawl') parses data.web results", async () => {
+    const { searchProvider } = await import("../research");
+    const saved = process.env.FIRECRAWL_API_KEY; process.env.FIRECRAWL_API_KEY = FC;
+    const real = globalThis.fetch; globalThis.fetch = (async () => new Response(JSON.stringify({ success: true, data: { web: [{ url: "https://news.microsoft.com/a", title: "Satya Nadella", description: "CEO of Microsoft" }] } }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
+    try { const hits = await searchProvider("firecrawl", "x y z query"); expect(hits).toHaveLength(1); expect(hits[0]).toMatchObject({ url: "https://news.microsoft.com/a", title: "Satya Nadella", provider: "firecrawl" }); }
+    finally { globalThis.fetch = real; if (saved) process.env.FIRECRAWL_API_KEY = saved; else delete process.env.FIRECRAWL_API_KEY; }
+  });
+});

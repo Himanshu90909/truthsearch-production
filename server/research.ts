@@ -5,7 +5,7 @@ import { recordUsage } from "./db";
 import { currentContext } from "./platform/context";
 import { buildPassages, extractPublishedDate, htmlToText } from "./verification/text";
 import { isTimeSensitive } from "./verification/claims";
-import { keyBelongsTo, webSearchChain, type WebProvider } from "./search/chain";
+import { keyBelongsTo, resolveProviderKey, webSearchChain, type WebProvider } from "./search/chain";
 import { classifyPublisher, credibilityScore, dedupeSources, rankScore } from "./search/ranking";
 import { searchWithFallback, type SearchAttempt } from "./search/fallback";
 import { scanForInjection } from "./verification/injection";
@@ -16,7 +16,7 @@ import { generateResearchImage } from "./visual/generate";
 import { chunkDocument, retrieveChunks, isResumeLike, wantsBroadContext, type RetrievedChunk } from "./rag";
 import { providerRegistry, providersForIntent } from "./providers/registry";
 
-export type ProviderName = "duckDuckGo" | "brave" | "tavily" | "semanticScholar" | "crossref" | "openalex" | "europePmc" | "wikipedia" | "arxiv" | "github" | "stackExchange" | "openLibrary" | "wikidata" | "worldBank" | "dataGov";
+export type ProviderName = "duckDuckGo" | "brave" | "tavily" | "firecrawl" | "semanticScholar" | "crossref" | "openalex" | "europePmc" | "wikipedia" | "arxiv" | "github" | "stackExchange" | "openLibrary" | "wikidata" | "worldBank" | "dataGov";
 export type ResearchProgress = { stage: string; detail: string; at: number };
 export type SearchHit = { title: string; url: string; snippet: string; published?: string; author?: string; provider: ProviderName };
 export type SourceRecord = SearchHit & { canonicalUrl: string; domain: string; sourceType: string; qualityScore: number; content: string; passages: string[]; relevance?: number };
@@ -204,17 +204,22 @@ export async function searchProvider(provider: ProviderName, query: string): Pro
     return entries.map((entry) => ({ title: between(entry, "<title>", "</title>") || `arXiv result for ${query}`, url: between(entry, "<id>", "</id>") || `https://arxiv.org/search/?query=${encodeURIComponent(query)}&searchtype=all`, snippet: between(entry, "<summary>", "</summary>"), published: between(entry, "<published>", "</published>"), provider }));
   }
   if (provider === "brave") {
-    // BRAVE_API_KEY is accepted as an alias, but only if it really looks like a Brave key: a Tavily key saved under that
-    // name must never be sent to Brave (it would be disclosed to the wrong company and rejected with HTTP 422).
-    const aliasKey = env("BRAVE_API_KEY");
-    const key = env("BRAVE_SEARCH_API_KEY") || (aliasKey && keyBelongsTo(aliasKey) !== "tavily" ? aliasKey : undefined);
+    const key = resolveProviderKey(process.env, "brave");
     if (!key) throw new Error("Brave Search is unavailable: BRAVE_SEARCH_API_KEY is not configured.");
     const data = await requestJson(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=10`, { headers: { "X-Subscription-Token": key } });
     return (data.web?.results || []).map((x: any) => ({ title: x.title, url: x.url, snippet: x.description || "", published: x.age, provider }));
   }
+  if (provider === "firecrawl") {
+    const key = resolveProviderKey(process.env, "firecrawl");
+    if (!key) throw new Error("Firecrawl is unavailable: FIRECRAWL_API_KEY is not configured (or holds a key that belongs to another provider).");
+    const data = await requestJson("https://api.firecrawl.dev/v2/search", { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${key}` }, body: JSON.stringify({ query, limit: 10 }) });
+    const rows = Array.isArray(data?.data?.web) ? data.data.web : Array.isArray(data?.data) ? data.data : [];
+    return rows.filter((x: any) => x?.url).map((x: any) => ({ title: x.title || x.metadata?.title || x.url, url: x.url, snippet: x.description || x.snippet || "", published: x.metadata?.publishedTime || x.publishedDate, provider }));
+  }
   if (provider === "tavily") {
-    const key = env("TAVILY_API_KEY");
-    if (!key) throw new Error("Tavily is unavailable: TAVILY_API_KEY is not configured.");
+    // Resolved by key shape as well as name, so a Firecrawl/Brave key saved as TAVILY_API_KEY is never sent to Tavily.
+    const key = resolveProviderKey(process.env, "tavily");
+    if (!key) throw new Error("Tavily is unavailable: TAVILY_API_KEY is not configured (or holds a key that belongs to another provider).");
     const data = await requestJson("https://api.tavily.com/search", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ api_key: key, query, search_depth: "advanced", max_results: 10, include_answer: false }) });
     return (data.results || []).map((x: any) => ({ title: x.title, url: x.url, snippet: x.content || "", published: x.published_date, provider }));
   }
